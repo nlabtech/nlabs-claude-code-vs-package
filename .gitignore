@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# Visual Studio / .NET - herkese acik build-in-public deposu
+# ---------------------------------------------------------------------------
+
+# Derleme ciktilari
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+build/
+bld/
+
+# VSIX paketi ve eklenti ciktilari
+*.vsix
+*.vsidx
+
+# Visual Studio kullanici / gecici dosyalari
+.vs/
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+*.userprefs
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+!packages/build/
+project.lock.json
+project.fragment.lock.json
+.nuget/
+
+# Test ve kapsam
+[Tt]est[Rr]esults/
+[Cc]overage*/
+*.coverage
+*.coveragexml
+*.trx
+
+# MSBuild / gunluk
+*.binlog
+*.log
+msbuild.log
+
+# ReSharper / Rider
+_ReSharper*/
+*.[Rr]e[Ss]harper
+.idea/
+
+# Ortam ve yerel gizli degerler (asla depoya girmez)
+.env
+*.local
+appsettings.*.local.json
+secrets.json
+
+# Isletim sistemi artiklari
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
