@@ -33,6 +33,14 @@
     <UseCodebase>true</UseCodebase>
   </PropertyGroup>
 
+  <!-- VSIX manifest'i: SDK globlaması onu zaten None olarak alır; burada yalnız
+       Designer alt tipini veriyoruz (Include değil Update - çift kayıt olmasın). -->
+  <ItemGroup>
+    <None Update="source.extension.vsixmanifest">
+      <SubType>Designer</SubType>
+    </None>
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" ExcludeAssets="runtime" />
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.9.820">

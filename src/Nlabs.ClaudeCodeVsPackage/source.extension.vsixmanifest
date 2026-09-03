@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0"
+                 xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"
+                 xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <Metadata>
+    <Identity Id="Nlabs.ClaudeCodeVsPackage.952c382f-7793-44ac-beab-e4c14cd9470c"
+              Version="0.1.0"
+              Language="tr-TR"
+              Publisher="Cuma Köse (nLabtech)" />
+    <DisplayName>Claude Code for Visual Studio (nLabtech)</DisplayName>
+    <Description xml:space="preserve">Visual Studio'da açık olan solution'ı Claude Code CLI'ye bağlayan bağımsız köprü eklentisi. Anthropic ya da Microsoft ile resmi bir bağlantısı yoktur.</Description>
+    <MoreInfo>https://github.com/nlabtech/nlabs-claude-code-vs-package</MoreInfo>
+    <Tags>claude, ai, cli, productivity, bridge</Tags>
+  </Metadata>
+
+  <Installation>
+    <!--
+      Sürüm aralığının yalnız ALT sınırı okunur, üst sınır yok sayılır. Bu yüzden
+      [17.0,) yazmak TEK VSIX'i hem Visual Studio 2022'ye hem 2026'ya kurar; uyumluluk
+      artık ürün sürümüne değil API sürümüne bağlıdır.
+    -->
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+  </Installation>
+
+  <Dependencies>
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework"
+                d:Source="Manual" Version="[4.7.2,)" />
+  </Dependencies>
+
+  <Prerequisites>
+    <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor"
+                  Version="[17.0,)" DisplayName="Visual Studio core editor" />
+  </Prerequisites>
+
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.VsPackage"
+           d:Source="Project" d:ProjectName="%CurrentProject%"
+           Path="|%CurrentProject%;PkgdefProjectOutputGroup|" />
+  </Assets>
+</PackageManifest>
