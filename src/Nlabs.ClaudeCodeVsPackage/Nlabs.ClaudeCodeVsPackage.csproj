@@ -33,6 +33,19 @@
     <UseCodebase>true</UseCodebase>
   </PropertyGroup>
 
+  <!--
+    F5 tuzağı: Elle yazılan bir VSIX projesinde debug başlatma ayarı yoktur; F5
+    "çalıştır"ı, .vsix'i KURMAK diye yorumlar ve VSIX Installer sihirbazı açılır
+    (eklenti günlük Visual Studio'ya kurulur - istediğimiz bu DEĞİL). Klasik şablon
+    bu ayarı .csproj.user'a yazar; .user depoya girmediği için biz .csproj içinde
+    tutuyoruz. Böylece F5, eklentiyi ayrı "Exp" kovanında başlatır, günlük VS kirlenmez.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <StartAction>Program</StartAction>
+    <StartProgram>$(DevEnvDir)devenv.exe</StartProgram>
+    <StartArguments>/rootsuffix Exp</StartArguments>
+  </PropertyGroup>
+
   <!-- VSIX manifest'i: SDK globlaması onu zaten None olarak alır; burada yalnız
        Designer alt tipini veriyoruz (Include değil Update - çift kayıt olmasın). -->
   <ItemGroup>
