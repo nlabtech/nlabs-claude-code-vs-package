@@ -1,42 +1,42 @@
-# Claude Code için Visual Studio Eklentisi (nLabtech)
+# Claude Code for Visual Studio (nLabtech)
 
-Visual Studio'da açık olan solution'ı Claude Code CLI'ye bağlayan bir köprü eklentisi.
-Seçtiğin kod, açık dosyalar ve derleyici hataları Claude'a otomatik gider — Visual
-Studio'dan hiç çıkmadan.
+A bridge extension that connects the solution open in Visual Studio to the Claude
+Code CLI. Your selected code, open files, and compiler errors reach Claude
+automatically - without leaving Visual Studio.
 
-> **Bağımsız / topluluk projesi.** Anthropic ya da Microsoft ile resmi bir bağlantısı
-> yoktur. "Claude Code", "Anthropic" ve "Visual Studio" ilgili sahiplerinin
-> markalarıdır. Bu eklenti kişisel bir ihtiyaçtan doğdu: Claude Code'un resmi bir
-> Visual Studio desteği yok, ben de kendim için yazdım.
+> **Independent / community project.** Not officially affiliated with Anthropic or
+> Microsoft. "Claude Code", "Anthropic" and "Visual Studio" are trademarks of their
+> respective owners. This extension began as a personal need: Claude Code has no
+> official Visual Studio support, so I built one for myself.
 
-## Bu depo nasıl büyüyor
+## How this repo grows
 
-Bu eklenti, adım adım ve herkese açık (build-in-public) geliştirildi. Her önemli adım,
-LinkedIn'de paylaşılan bir yazıyla birlikte geldi; ilgili commit, o yazıda anlatılan kodu
-**birebir** içerir. Böylece anlatılan ders ile çalışan kod her zaman aynı yerde durur.
+This extension is built step by step, in public. Each meaningful step ships alongside
+a post; the matching commit contains the exact code discussed in that post. So the
+lesson and the working code always live in the same place.
 
-Yazılar: [@turkmvc](https://www.linkedin.com/in/turkmvc/) · nLabtech ([nlabtech.com.tr](https://nlabtech.com.tr))
+Posts: [@turkmvc](https://www.linkedin.com/in/turkmvc/) - nLabtech ([nlabtech.com.tr](https://nlabtech.com.tr))
 
-## Ne yapar
+## What it does
 
-- **Seçilen kod kendiliğinden bağlam olur** — dosya ya da satır sormaz.
-- **Derleme hatalarını Visual Studio'dan okur** — Error List'teki listeyi.
-- **Değişiklikleri Visual Studio'nun diff penceresinde gösterir** — kabul et / reddet.
-- Model çalıştırmaz, dosya yazmaz, telemetri göndermez; yalnızca `127.0.0.1` dinler ve
-  kullanıcının kendi Claude aboneliğini kendi makinesinde kullanır.
+- **Selected code becomes context on its own** - no need to name the file or line.
+- **Reads compiler errors from Visual Studio** - the Error List.
+- **Shows changes in Visual Studio's own diff window** - accept or reject.
+- Runs no model, writes no files, sends no telemetry; listens only on `127.0.0.1`
+  and uses your own Claude subscription on your own machine.
 
-## Teknoloji
+## Technology
 
-- SDK tarzı VSSDK eklentisi, süreç içi (in-proc), hedef `net472` — Visual Studio'nun
-  kabuğu hâlâ .NET Framework 4.7.2 üzerinde koşar.
-- Tek VSIX hem Visual Studio 2022'ye hem 2026'ya kurulur (`InstallationTarget [17.0,)`).
-- Çekirdek (WebSocket sunucusu, el sıkışma, protokol) Visual Studio'ya sıfır bağımlı
-  ayrı bir projede durur — VS açmadan test edilebilir.
+- SDK-style VSSDK extension, in-process, targeting `net472` - the Visual Studio shell
+  still runs on .NET Framework 4.7.2.
+- A single VSIX installs on both Visual Studio 2022 and 2026 (`InstallationTarget [17.0,)`).
+- The core (WebSocket server, handshake, protocol) lives in a project with zero
+  dependency on Visual Studio - so it can be tested without opening VS.
 
-## Durum
+## Status
 
-Erken aşama, herkese açık gelişiyor. Üretim kullanımından önce kendi riskinle dene.
+Early stage, developed in public. Try at your own risk before using in production.
 
-## Lisans
+## License
 
-MIT — bkz. [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

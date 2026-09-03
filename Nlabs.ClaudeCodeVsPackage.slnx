@@ -1,9 +1,10 @@
 <Solution>
-  <!-- <Deploy /> olmadan F5 "Deploy Not Enabled" der ve VSIX, Experimental
-       Instance'a kurulmaz (yalnızca derlenir). Klasik .sln'deki "...Deploy.0"
-       satırının .slnx karşılığı budur; attribute'suz yazım tüm konfigürasyonlar
-       için geçerlidir. Dosya elle değiştirilirse çözüm kapatılıp yeniden açılmalı. -->
+  <!-- Without <Deploy />, F5 says "Deploy Not Enabled" and the VSIX is not installed
+       into the Experimental Instance (it is only built). This is the .slnx equivalent
+       of the classic .sln "...Deploy.0" line; the attribute-less form applies to all
+       configurations. If edited by hand, close and reopen the solution. -->
   <Project Path="src/Nlabs.ClaudeCodeVsPackage/Nlabs.ClaudeCodeVsPackage.csproj">
     <Deploy />
   </Project>
+  <Project Path="src/Nlabs.ClaudeCodeVsPackage.Bridge/Nlabs.ClaudeCodeVsPackage.Bridge.csproj" />
 </Solution>

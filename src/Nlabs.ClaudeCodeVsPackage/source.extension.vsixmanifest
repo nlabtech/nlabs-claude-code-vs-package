@@ -5,19 +5,19 @@
   <Metadata>
     <Identity Id="Nlabs.ClaudeCodeVsPackage.952c382f-7793-44ac-beab-e4c14cd9470c"
               Version="0.1.0"
-              Language="tr-TR"
-              Publisher="Cuma Köse (nLabtech)" />
+              Language="en-US"
+              Publisher="Cuma Kose (nLabtech)" />
     <DisplayName>Claude Code for Visual Studio (nLabtech)</DisplayName>
-    <Description xml:space="preserve">Visual Studio'da açık olan solution'ı Claude Code CLI'ye bağlayan bağımsız köprü eklentisi. Anthropic ya da Microsoft ile resmi bir bağlantısı yoktur.</Description>
+    <Description xml:space="preserve">An independent bridge extension that connects the solution open in Visual Studio to the Claude Code CLI. Not officially affiliated with Anthropic or Microsoft.</Description>
     <MoreInfo>https://github.com/nlabtech/nlabs-claude-code-vs-package</MoreInfo>
     <Tags>claude, ai, cli, productivity, bridge</Tags>
   </Metadata>
 
   <Installation>
     <!--
-      Sürüm aralığının yalnız ALT sınırı okunur, üst sınır yok sayılır. Bu yüzden
-      [17.0,) yazmak TEK VSIX'i hem Visual Studio 2022'ye hem 2026'ya kurar; uyumluluk
-      artık ürün sürümüne değil API sürümüne bağlıdır.
+      Only the LOWER bound of the version range is read; the upper bound is ignored.
+      That is why [17.0,) installs a SINGLE VSIX on both Visual Studio 2022 and 2026:
+      compatibility is now driven by the API version, not the product version.
     -->
     <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,)">
       <ProductArchitecture>amd64</ProductArchitecture>

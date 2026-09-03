@@ -8,28 +8,28 @@ using Task = System.Threading.Tasks.Task;
 namespace Nlabs.ClaudeCodeVsPackage
 {
     /// <summary>
-    /// Eklentinin giriş noktası.
+    /// The extension entry point.
     ///
-    /// Solution açıldığında arka planda yüklenir (AllowsBackgroundLoading) ve
-    /// yüklenme UI iş parçacığını bloke etmez. Bu iskelet sürümde ağır iş yoktur;
-    /// ilerideki adımlarda yerel köprü (yalnızca 127.0.0.1 dinleyen WebSocket
-    /// sunucusu) burada başlatılacak.
+    /// Loaded in the background when a solution opens (AllowsBackgroundLoading), so
+    /// loading never blocks the UI thread. This skeleton version does no real work;
+    /// later steps will start the local bridge (a WebSocket server that listens only
+    /// on 127.0.0.1) from here.
     ///
-    /// UseManagedResourcesOnly = true: paket kaynakları yönetilen (managed)
-    /// tarafta aranır. Menü tablosu (.ctmenu) sonraki adımda eklenince bu, doğru
-    /// kaynak akışının bulunmasını gerektirecek; şimdilik komut yok.
+    /// UseManagedResourcesOnly = true: package resources are looked up on the managed
+    /// side. Once a command table (.ctmenu) is added in a later step, this will require
+    /// the correct resource stream to be found; there are no commands yet.
     /// </summary>
     [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
     [ProvideAutoLoad(VSConstants.UICONTEXT.SolutionExists_string, PackageAutoLoadFlags.BackgroundLoad)]
     [Guid(PackageGuidString)]
     public sealed class ClaudeCodeVsPackage : AsyncPackage
     {
-        /// <summary>Paketin benzersiz kimliği. Kayıt (pkgdef) bununla eşleşir.</summary>
+        /// <summary>The package's unique id. The registration (pkgdef) matches on this.</summary>
         public const string PackageGuidString = "952c382f-7793-44ac-beab-e4c14cd9470c";
 
         /// <summary>
-        /// Paket başlatma. base çağrısından sonra artık ana iş parçacığına
-        /// geçilebilir; ama burada henüz bir şey yapmıyoruz.
+        /// Package initialization. After the base call we may switch to the main thread,
+        /// but we do nothing here yet.
         /// </summary>
         protected override async Task InitializeAsync(
             CancellationToken cancellationToken,
@@ -37,7 +37,7 @@ namespace Nlabs.ClaudeCodeVsPackage
         {
             await base.InitializeAsync(cancellationToken, progress);
 
-            // Sonraki adım (yerel köprü): burada başlatılacak.
+            // Next step (local bridge): will be started here.
         }
     }
 }

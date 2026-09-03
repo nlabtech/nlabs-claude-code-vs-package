@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    SDK tarzı VSSDK eklenti projesi.
+    SDK-style VSSDK extension project.
 
-    Hedef net472 bir tercih değil: Visual Studio'nun kabuğu (devenv.exe) hâlâ .NET
-    Framework 4.7.2 üzerinde koşar. Süreç içi (in-proc) yüklenen her eklenti bu
-    runtime'da olmak zorundadır; .NET 10/11 bunu değiştirmez. Kısıt runtime API
-    yüzeyindedir, dilde değil: LangVersion latest ile güncel C# sözdizimi serbesttir.
+    Targeting net472 is not a preference: the Visual Studio shell (devenv.exe) still
+    runs on .NET Framework 4.7.2. Any in-process extension must live in that runtime;
+    .NET 10/11 does not change this. The constraint is on the runtime API surface, not
+    the language: LangVersion latest keeps modern C# syntax available.
   -->
 
   <PropertyGroup>
@@ -17,13 +17,13 @@
     <RootNamespace>Nlabs.ClaudeCodeVsPackage</RootNamespace>
     <AssemblyName>Nlabs.ClaudeCodeVsPackage</AssemblyName>
 
-    <!-- Yayın sürümü manifest'ten takip edilir; AssemblyVersion SABİT kalır. -->
+    <!-- The release version is tracked by the manifest; AssemblyVersion stays FIXED. -->
     <Version>0.1.0</Version>
     <AssemblyVersion>0.1.0.0</AssemblyVersion>
     <FileVersion>0.1.0.0</FileVersion>
   </PropertyGroup>
 
-  <!-- VSIX kapsayıcısı: pkgdef üret, çıktı assembly'yi pakete koy, sembolleri koyma. -->
+  <!-- VSIX container: generate pkgdef, put the output assembly in the package, no symbols. -->
   <PropertyGroup>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
     <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
@@ -34,11 +34,12 @@
   </PropertyGroup>
 
   <!--
-    F5 tuzağı: Elle yazılan bir VSIX projesinde debug başlatma ayarı yoktur; F5
-    "çalıştır"ı, .vsix'i KURMAK diye yorumlar ve VSIX Installer sihirbazı açılır
-    (eklenti günlük Visual Studio'ya kurulur - istediğimiz bu DEĞİL). Klasik şablon
-    bu ayarı .csproj.user'a yazar; .user depoya girmediği için biz .csproj içinde
-    tutuyoruz. Böylece F5, eklentiyi ayrı "Exp" kovanında başlatır, günlük VS kirlenmez.
+    F5 trap: a hand-written VSIX project has no debug launch settings, so F5 ("run")
+    is interpreted as INSTALL the .vsix and the VSIX Installer wizard opens (the
+    extension gets installed into the everyday Visual Studio - which is NOT what we
+    want). The classic template writes these to .csproj.user; since .user is not
+    committed, we keep them in .csproj. Now F5 launches the extension in a separate
+    "Exp" hive and the everyday VS stays clean.
   -->
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
     <StartAction>Program</StartAction>
@@ -46,12 +47,20 @@
     <StartArguments>/rootsuffix Exp</StartArguments>
   </PropertyGroup>
 
-  <!-- VSIX manifest'i: SDK globlaması onu zaten None olarak alır; burada yalnız
-       Designer alt tipini veriyoruz (Include değil Update - çift kayıt olmasın). -->
+  <!-- The VSIX manifest: SDK globbing already picks it up as None; here we only set the
+       Designer sub-type (Update, not Include, to avoid a duplicate item). -->
   <ItemGroup>
     <None Update="source.extension.vsixmanifest">
       <SubType>Designer</SubType>
     </None>
+  </ItemGroup>
+
+  <!-- The VS-independent bridge core; Bridge.dll is copied into the VSIX (Private=true). -->
+  <ItemGroup>
+    <ProjectReference Include="..\Nlabs.ClaudeCodeVsPackage.Bridge\Nlabs.ClaudeCodeVsPackage.Bridge.csproj">
+      <Name>Nlabs.ClaudeCodeVsPackage.Bridge</Name>
+      <Private>true</Private>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>

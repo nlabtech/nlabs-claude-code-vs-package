@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------------------
-# Visual Studio / .NET - herkese acik build-in-public deposu
+# Visual Studio / .NET - public build-in-public repository
 # ---------------------------------------------------------------------------
 
-# Derleme ciktilari
+# Build output
 [Bb]in/
 [Oo]bj/
 [Dd]ebug/
@@ -14,11 +14,11 @@ x86/
 build/
 bld/
 
-# VSIX paketi ve eklenti ciktilari
+# VSIX package and extension output
 *.vsix
 *.vsidx
 
-# Visual Studio kullanici / gecici dosyalari
+# Visual Studio user / temp files
 .vs/
 *.user
 *.userosscache
@@ -35,14 +35,14 @@ project.lock.json
 project.fragment.lock.json
 .nuget/
 
-# Test ve kapsam
+# Test and coverage
 [Tt]est[Rr]esults/
 [Cc]overage*/
 *.coverage
 *.coveragexml
 *.trx
 
-# MSBuild / gunluk
+# MSBuild / logs
 *.binlog
 *.log
 msbuild.log
@@ -52,13 +52,13 @@ _ReSharper*/
 *.[Rr]e[Ss]harper
 .idea/
 
-# Ortam ve yerel gizli degerler (asla depoya girmez)
+# Environment and local secrets (never committed)
 .env
 *.local
 appsettings.*.local.json
 secrets.json
 
-# Isletim sistemi artiklari
+# OS artifacts
 Thumbs.db
 ehthumbs.db
 Desktop.ini
