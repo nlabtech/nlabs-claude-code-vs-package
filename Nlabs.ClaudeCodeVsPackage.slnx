@@ -1,0 +1,9 @@
+<Solution>
+  <!-- <Deploy /> olmadan F5 "Deploy Not Enabled" der ve VSIX, Experimental
+       Instance'a kurulmaz (yalnızca derlenir). Klasik .sln'deki "...Deploy.0"
+       satırının .slnx karşılığı budur; attribute'suz yazım tüm konfigürasyonlar
+       için geçerlidir. Dosya elle değiştirilirse çözüm kapatılıp yeniden açılmalı. -->
+  <Project Path="src/Nlabs.ClaudeCodeVsPackage/Nlabs.ClaudeCodeVsPackage.csproj">
+    <Deploy />
+  </Project>
+</Solution>
