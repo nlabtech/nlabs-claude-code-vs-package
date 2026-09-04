@@ -28,6 +28,8 @@ internal sealed class AgentPanelControl : UserControl
     private readonly ScrollViewer _scroller;
     private readonly TextBox _input;
     private readonly TextBlock _status;
+    private readonly ComboBox _modelCombo;
+    private readonly ComboBox _modeCombo;
 
     private ClaudeCliSession? _session;
     private TextBlock? _streamingReply;
@@ -67,9 +69,31 @@ internal sealed class AgentPanelControl : UserControl
         _input.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         _input.PreviewKeyDown += OnInputKeyDown;
 
+        _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet") });
+        _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits") });
+
+        var newButton = new Button
+        {
+            Content = "New session",
+            Padding = new Thickness(8, 2, 8, 2),
+            Margin = new Thickness(0, 0, 10, 0),
+        };
+        newButton.Click += (_, __) => NewSession();
+
+        var toolbar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(8, 8, 8, 0),
+        };
+        toolbar.Children.Add(newButton);
+        toolbar.Children.Add(LabelFor("Model", _modelCombo));
+        toolbar.Children.Add(LabelFor("Permission", _modeCombo));
+
         var root = new DockPanel();
+        DockPanel.SetDock(toolbar, Dock.Top);
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(_input, Dock.Bottom);
+        root.Children.Add(toolbar);
         root.Children.Add(_status);
         root.Children.Add(_input);
         root.Children.Add(_scroller);
@@ -117,7 +141,7 @@ internal sealed class AgentPanelControl : UserControl
         _session = new ClaudeCliSession();
         _session.Event += OnCliEvent;
         _session.Exited += (_, __) => OnUi(() => _status.Text = "Session ended.");
-        _session.Start(SolutionDirectory(), new ClaudeCliOptions());
+        _session.Start(SolutionDirectory(), CurrentOptions());
         _status.Text = "Connected.";
     }
 
@@ -197,6 +221,51 @@ internal sealed class AgentPanelControl : UserControl
 #pragma warning disable VSTHRD001
     private void OnUi(Action action) => Dispatcher.Invoke(action);
 #pragma warning restore VSTHRD001
+
+    // The CLI options chosen in the toolbar. They take effect when a session starts, so changing
+    // them after a session is running applies on the next New session.
+    private ClaudeCliOptions CurrentOptions() => new ClaudeCliOptions
+    {
+        Model = (_modelCombo.SelectedItem as ComboBoxItem)?.Tag as string,
+        PermissionMode = (_modeCombo.SelectedItem as ComboBoxItem)?.Tag as string,
+    };
+
+    // Ends the current session and clears the transcript; the next message starts a fresh one
+    // with the currently selected model and permission mode.
+    private void NewSession()
+    {
+        _session?.Dispose();
+        _session = null;
+        _streamingReply = null;
+        _messages.Children.Clear();
+        _status.Text = "New session - the model and permission apply on your next message.";
+    }
+
+    private ComboBox MakeCombo((string label, string? value)[] options)
+    {
+        var combo = new ComboBox { MinWidth = 120, Margin = new Thickness(0, 0, 10, 0) };
+        foreach (var (label, value) in options)
+        {
+            combo.Items.Add(new ComboBoxItem { Content = label, Tag = value });
+        }
+        combo.SelectedIndex = 0;
+        return combo;
+    }
+
+    private static UIElement LabelFor(string text, UIElement control)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        var label = new TextBlock
+        {
+            Text = text + ":",
+            Opacity = 0.7,
+            Margin = new Thickness(0, 0, 4, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        panel.Children.Add(label);
+        panel.Children.Add(control);
+        return panel;
+    }
 
     private static string SolutionDirectory()
     {
