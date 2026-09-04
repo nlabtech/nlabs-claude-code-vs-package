@@ -52,7 +52,8 @@ public sealed class ClaudeCliSession : IDisposable
     /// <summary>Launches the CLI in <paramref name="workingDirectory"/> with the given options.</summary>
     public void Start(string workingDirectory, ClaudeCliOptions options)
     {
-        var psi = new ProcessStartInfo("claude", BuildArguments(options))
+        var (fileName, arguments) = ComposeStart(ResolveExecutable(), BuildArguments(options));
+        var psi = new ProcessStartInfo(fileName, arguments)
         {
             WorkingDirectory = workingDirectory ?? string.Empty,
             RedirectStandardInput = true,
@@ -93,6 +94,62 @@ public sealed class ClaudeCliSession : IDisposable
         {
             Event?.Invoke(this, CliStreamProtocol.Parse(line));
         }
+    }
+
+    /// <summary>
+    /// Composes the process file name and argument line. On Windows `claude` is usually an npm
+    /// shim (claude.cmd), which the raw CreateProcess path cannot launch, so a resolved .exe runs
+    /// directly, a .cmd/.bat runs through cmd.exe, and an unresolved command falls back to cmd.exe
+    /// (which searches PATH and knows the shim). Kept pure so the composition is unit-tested.
+    /// </summary>
+    public static (string fileName, string arguments) ComposeStart(string? resolvedExecutable, string cliArguments)
+    {
+        if (string.IsNullOrEmpty(resolvedExecutable))
+        {
+            return ("cmd.exe", "/d /s /c claude " + cliArguments);
+        }
+        if (resolvedExecutable!.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return (resolvedExecutable, cliArguments);
+        }
+        return ("cmd.exe", "/d /s /c \"" + resolvedExecutable + "\" " + cliArguments);
+    }
+
+    // Best-effort location of the claude executable: an explicit override, then PATH, then the
+    // npm global directory. Returns null to let cmd.exe resolve it from PATH.
+    private static string? ResolveExecutable()
+    {
+        string? overridePath = Environment.GetEnvironmentVariable("NLABS_CLAUDE_PATH");
+        if (!string.IsNullOrEmpty(overridePath) && File.Exists(overridePath)) return overridePath;
+
+        string[] names = { "claude.exe", "claude.cmd", "claude.bat" };
+
+        string path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        foreach (string dir in path.Split(';'))
+        {
+            if (string.IsNullOrWhiteSpace(dir)) continue;
+            foreach (string name in names)
+            {
+                try
+                {
+                    string candidate = Path.Combine(dir.Trim(), name);
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch { /* an invalid PATH entry - skip */ }
+            }
+        }
+
+        string? appData = Environment.GetEnvironmentVariable("APPDATA");
+        if (!string.IsNullOrEmpty(appData))
+        {
+            foreach (string name in names)
+            {
+                string candidate = Path.Combine(appData!, "npm", name);
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>Builds the CLI argument line for the given options.</summary>

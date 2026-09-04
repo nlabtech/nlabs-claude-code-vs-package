@@ -55,6 +55,33 @@ public class ClaudeCliSessionTests
     }
 
     [Fact]
+    public void ComposeStart_runs_a_real_exe_directly()
+    {
+        var (file, args) = ClaudeCliSession.ComposeStart(@"C:\tools\claude.exe", "-p x");
+
+        Assert.Equal(@"C:\tools\claude.exe", file);
+        Assert.Equal("-p x", args);
+    }
+
+    [Fact]
+    public void ComposeStart_runs_a_cmd_shim_through_cmd_exe()
+    {
+        var (file, args) = ClaudeCliSession.ComposeStart(@"C:\npm\claude.cmd", "-p x");
+
+        Assert.Equal("cmd.exe", file);
+        Assert.Contains("\"C:\\npm\\claude.cmd\" -p x", args);
+    }
+
+    [Fact]
+    public void ComposeStart_falls_back_to_cmd_when_unresolved()
+    {
+        var (file, args) = ClaudeCliSession.ComposeStart(null, "-p x");
+
+        Assert.Equal("cmd.exe", file);
+        Assert.Contains("claude -p x", args);
+    }
+
+    [Fact]
     public void Pump_raises_a_parsed_event_for_each_line()
     {
         var session = new ClaudeCliSession();
