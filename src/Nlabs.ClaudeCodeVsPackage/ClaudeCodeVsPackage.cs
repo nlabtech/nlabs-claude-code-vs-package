@@ -63,8 +63,10 @@ namespace Nlabs.ClaudeCodeVsPackage
 
             if (await GetServiceAsync(typeof(IMenuCommandService)) is OleMenuCommandService commandService)
             {
-                var commandId = new CommandID(PackageGuids.CommandSet, PackageIds.RestartBridgeCommandId);
-                commandService.AddCommand(new MenuCommand(OnRestartBridge, commandId));
+                commandService.AddCommand(new MenuCommand(
+                    OnRestartBridge, new CommandID(PackageGuids.CommandSet, PackageIds.RestartBridgeCommandId)));
+                commandService.AddCommand(new MenuCommand(
+                    OnSendSelection, new CommandID(PackageGuids.CommandSet, PackageIds.SendSelectionCommandId)));
             }
 
             StartBridge();
@@ -145,6 +147,30 @@ namespace Nlabs.ClaudeCodeVsPackage
                 OLEMSGICON.OLEMSGICON_INFO,
                 OLEMSGBUTTON.OLEMSGBUTTON_OK,
                 OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
+        }
+
+        /// <summary>
+        /// Pushes the current editor selection to Claude Code as an at_mentioned notification -
+        /// the Visual Studio equivalent of "@-mentioning" a file range, so the model picks up
+        /// what the developer is pointing at. Only the path and the zero-based line range travel.
+        /// </summary>
+        private void OnSendSelection(object sender, EventArgs e)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            BridgeServer? bridge = _bridge;
+            if (bridge == null) return;
+            if (!(GetGlobalService(typeof(DTE)) is DTE2 dte)) return;
+
+            Document doc = dte.ActiveDocument;
+            if (doc == null || !(doc.Selection is TextSelection selection)) return;
+
+            // Visual Studio lines are one-based; the IDE protocol is zero-based.
+            int startLine = Math.Max(0, selection.TopPoint.Line - 1);
+            int endLine = Math.Max(0, selection.BottomPoint.Line - 1);
+
+            string json = IdeNotifications.AtMentioned(doc.FullName, startLine, endLine);
+            _ = JoinableTaskFactory.RunAsync(async () => await bridge.SendAsync(json));
         }
 
         /// <summary>The directories of the open solution's projects; the CLI treats these as roots.</summary>
