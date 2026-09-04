@@ -2,7 +2,6 @@ using System;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
-using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,11 +9,12 @@ using System.Threading.Tasks;
 namespace Nlabs.ClaudeCodeVsPackage.Bridge
 {
     /// <summary>
-    /// The local bridge server.
+    /// The local bridge server that Claude Code connects to as a native IDE.
     ///
     /// Security posture (all of it testable):
     ///  - Listens only on 127.0.0.1; not reachable from the local network.
-    ///  - Generates a 32-byte crypto-RNG token per session and compares in constant time.
+    ///  - Issues a per-session token and requires it in the IDE authorization header
+    ///    (x-claude-code-ide-authorization), compared in constant time.
     ///  - Rejects any request that carries an Origin header: the real CLI never sends
     ///    Origin, but a malicious page in a browser does. This blocks browser-driven
     ///    attacks against the loopback listener.
@@ -28,14 +28,13 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge
         private const int MaxMessageBytes = 1 * 1024 * 1024; // 1 MB
 
         private readonly HttpListener _listener = new HttpListener();
-        private readonly byte[] _tokenBytes = new byte[32];
         private readonly object _clientGate = new object();
         private readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
 
         private WebSocket? _activeSocket;
         private CancellationTokenSource? _cts;
 
-        /// <summary>The token a client must present (hex).</summary>
+        /// <summary>The token a client must present in the IDE authorization header.</summary>
         public string Token { get; }
 
         /// <summary>The port the server listens on (set after Start).</summary>
@@ -46,11 +45,9 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge
 
         public BridgeServer()
         {
-            using (var rng = RandomNumberGenerator.Create())
-            {
-                rng.GetBytes(_tokenBytes);
-            }
-            Token = ToHex(_tokenBytes);
+            // A UUID token, matching what Claude Code's IDE clients present; it is written to
+            // the discovery lock file and compared in constant time on each connection.
+            Token = Guid.NewGuid().ToString();
         }
 
         public void Start()
@@ -96,8 +93,8 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge
                 return;
             }
 
-            // Token check (constant time).
-            if (!CheckToken(request.Headers["Authorization"])) { Reject(context, 401); return; }
+            // Token check (constant time). Claude Code presents the lock-file token here.
+            if (!CheckToken(request.Headers["x-claude-code-ide-authorization"])) { Reject(context, 401); return; }
 
             if (!request.IsWebSocketRequest) { Reject(context, 400); return; }
 
@@ -107,11 +104,10 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge
                 if (_activeSocket != null) { Reject(context, 409); return; }
             }
 
-            // Handshake trap: the client requests a WebSocket subprotocol via
-            // Sec-WebSocket-Protocol. If the server does not echo the selected
-            // subprotocol back, the client silently drops the connection - and the
-            // symptom looks like a timeout ("timed out after 30s"), pointing at the
-            // wrong place entirely. So we echo the first requested subprotocol.
+            // Handshake: if the client requests a WebSocket subprotocol via
+            // Sec-WebSocket-Protocol, echo the first one back on accept. Claude Code does not
+            // require a fixed subprotocol, but a client that asks for one drops the handshake
+            // (looking like a timeout) if the server does not confirm it.
             string? requestedSubprotocol = FirstSubprotocol(request.Headers["Sec-WebSocket-Protocol"]);
 
             HttpListenerWebSocketContext wsContext;
@@ -196,18 +192,10 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge
             }
         }
 
-        private bool CheckToken(string? authorizationHeader)
+        private bool CheckToken(string? presentedToken)
         {
-            if (string.IsNullOrEmpty(authorizationHeader)) { return false; }
-
-            const string prefix = "Bearer ";
-            if (!authorizationHeader!.StartsWith(prefix, StringComparison.Ordinal)) { return false; }
-
-            string provided = authorizationHeader.Substring(prefix.Length).Trim();
-            byte[]? providedBytes = FromHex(provided);
-            if (providedBytes == null) { return false; }
-
-            return FixedTimeEquals(providedBytes, _tokenBytes);
+            if (string.IsNullOrEmpty(presentedToken)) { return false; }
+            return FixedTimeEquals(presentedToken!, Token);
         }
 
         private static void Reject(HttpListenerContext context, int status)
@@ -227,8 +215,8 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge
 
         /// <summary>
         /// Returns the first subprotocol from a comma-separated Sec-WebSocket-Protocol
-        /// header, or null if none. The value must be echoed back on accept, otherwise
-        /// the client drops the handshake.
+        /// header, or null if none. The value must be echoed back on accept, otherwise a
+        /// client that asked for one drops the handshake.
         /// </summary>
         private static string? FirstSubprotocol(string? header)
         {
@@ -250,35 +238,13 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge
             return port;
         }
 
-        /// <summary>Length-independent constant-time comparison (not built in on net472).</summary>
-        private static bool FixedTimeEquals(byte[] a, byte[] b)
+        /// <summary>Constant-time string comparison (net472 has no built-in).</summary>
+        private static bool FixedTimeEquals(string a, string b)
         {
-            if (a.Length != b.Length) { return false; }
-            int diff = 0;
-            for (int i = 0; i < a.Length; i++) { diff |= a[i] ^ b[i]; }
+            int diff = a.Length ^ b.Length;
+            int shared = Math.Min(a.Length, b.Length);
+            for (int i = 0; i < shared; i++) { diff |= a[i] ^ b[i]; }
             return diff == 0;
-        }
-
-        private static string ToHex(byte[] bytes)
-        {
-            var sb = new StringBuilder(bytes.Length * 2);
-            foreach (byte b in bytes) { sb.Append(b.ToString("x2")); }
-            return sb.ToString();
-        }
-
-        private static byte[]? FromHex(string hex)
-        {
-            if (hex.Length == 0 || (hex.Length % 2) != 0) { return null; }
-            var bytes = new byte[hex.Length / 2];
-            for (int i = 0; i < bytes.Length; i++)
-            {
-                if (!byte.TryParse(hex.Substring(i * 2, 2),
-                        System.Globalization.NumberStyles.HexNumber, null, out bytes[i]))
-                {
-                    return null;
-                }
-            }
-            return bytes;
         }
 
         public void Dispose()

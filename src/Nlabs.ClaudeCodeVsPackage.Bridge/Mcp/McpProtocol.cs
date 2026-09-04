@@ -48,7 +48,8 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Mcp
     /// </summary>
     public sealed class McpProtocol
     {
-        private const string DefaultProtocolVersion = "2025-06-18";
+        // Claude Code's IDE server advertises this version; we echo the client's if it sends one.
+        private const string DefaultProtocolVersion = "2024-11-05";
 
         private readonly IMcpToolCatalog _catalog;
         private readonly string _serverName;
@@ -114,7 +115,12 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Mcp
             return new JObject
             {
                 ["protocolVersion"] = string.IsNullOrEmpty(requested) ? DefaultProtocolVersion : requested,
-                ["capabilities"] = new JObject { ["tools"] = new JObject { ["listChanged"] = false } },
+                ["capabilities"] = new JObject
+                {
+                    ["logging"] = new JObject(),
+                    ["prompts"] = new JObject { ["listChanged"] = true },
+                    ["tools"] = new JObject { ["listChanged"] = true },
+                },
                 ["serverInfo"] = new JObject { ["name"] = _serverName, ["version"] = _serverVersion },
             };
         }

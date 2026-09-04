@@ -28,7 +28,6 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Tests
                 string json = File.ReadAllText(path);
                 Assert.Contains("\"pid\":4242", json);
                 Assert.Contains("\"transport\":\"ws\"", json);
-                Assert.Contains("\"runningInWindows\":true", json);
                 Assert.Contains("\"ideName\":\"Visual Studio\"", json);
                 Assert.Contains("\"authToken\":\"tok\\\"en\"", json);   // the quote is escaped
                 Assert.Contains("C:\\\\proj\\\\a", json);               // backslashes are escaped

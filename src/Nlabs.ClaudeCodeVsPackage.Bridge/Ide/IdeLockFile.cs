@@ -46,7 +46,6 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Ide
             json.Append("\"pid\":").Append(processId).Append(',');
             json.Append("\"ideName\":").Append(Quote(ideName)).Append(',');
             json.Append("\"transport\":\"ws\",");
-            json.Append("\"runningInWindows\":true,");
             json.Append("\"authToken\":").Append(Quote(authToken)).Append(',');
             json.Append("\"workspaceFolders\":[");
             bool first = true;
