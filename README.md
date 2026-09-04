@@ -33,9 +33,12 @@ Tool names mirror Claude Code's built-in IDE tools, so the model treats them as 
 | **Context (read-only)** | `getDiagnostics`, `getCurrentSelection`, `getOpenEditors`, `getWorkspaceFolders`, `readFile`, `checkDocumentDirty`, `getDebugState` |
 | **Navigation / editor** | `openFile`, `saveDocument`, `closeTab`, `formatDocument` |
 | **Change (single-writer)** | `openDiff` |
-| **Build** | `buildSolution` |
-| **Debugger** | `addBreakpoint`, `debugControl` (continue / stepOver / stepInto / stepOut / break / stop) |
-| **Navigate the code** | `getSolutionStructure`, `findSymbols` (Roslyn) |
+| **Build / tests / VCS** | `buildSolution`, `runTests`, `gitStatus` |
+| **Debugger** | `addBreakpoint`, `removeBreakpoint`, `listBreakpoints`, `debugControl` (continue / stepOver / stepInto / stepOut / break / stop), `getCallStack`, `evaluateExpression` |
+| **Navigate the code** | `getSolutionStructure`, `findSymbols`, `findReferences` (Roslyn) |
+
+24 tools in all. Build, tests and the debugger go beyond the built-in IDE tool set - that is
+Visual Studio's edge.
 
 **Single-writer principle:** Claude never edits your buffer directly. `openDiff` shows a diff
 (current vs proposed); you stay the only one who applies a change.
