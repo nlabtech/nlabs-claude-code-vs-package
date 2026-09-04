@@ -69,7 +69,19 @@ public class ClaudeCliSessionTests
         var (file, args) = ClaudeCliSession.ComposeStart(@"C:\npm\claude.cmd", "-p x");
 
         Assert.Equal("cmd.exe", file);
-        Assert.Contains("\"C:\\npm\\claude.cmd\" -p x", args);
+        // The whole command is wrapped in one extra pair of quotes so cmd /s strips only the outer
+        // pair, leaving the executable's quotes intact - otherwise claude launches mangled and dies.
+        Assert.Equal("/d /s /c \"\"C:\\npm\\claude.cmd\" -p x\"", args);
+    }
+
+    [Fact]
+    public void ComposeStart_keeps_inner_quotes_intact_after_the_outer_strip()
+    {
+        // A --settings path with its own quotes must survive cmd's first/last-quote strip.
+        var (_, args) = ClaudeCliSession.ComposeStart(@"C:\npm\claude.cmd", "-p --settings \"C:\\t\\s.json\"");
+
+        string afterOuterStrip = StripFirstAndLastQuote(args.Substring("/d /s /c ".Length));
+        Assert.Equal("\"C:\\npm\\claude.cmd\" -p --settings \"C:\\t\\s.json\"", afterOuterStrip);
     }
 
     [Fact]
@@ -79,6 +91,15 @@ public class ClaudeCliSessionTests
 
         Assert.Equal("cmd.exe", file);
         Assert.Contains("claude -p x", args);
+    }
+
+    // Mirrors cmd.exe /s: remove exactly the first and last quote of the /c string.
+    private static string StripFirstAndLastQuote(string s)
+    {
+        int first = s.IndexOf('"');
+        int last = s.LastIndexOf('"');
+        if (first < 0 || last <= first) return s;
+        return s.Remove(last, 1).Remove(first, 1);
     }
 
     [Fact]

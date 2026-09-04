@@ -120,18 +120,25 @@ public sealed class ClaudeCliSession : IDisposable
     /// shim (claude.cmd), which the raw CreateProcess path cannot launch, so a resolved .exe runs
     /// directly, a .cmd/.bat runs through cmd.exe, and an unresolved command falls back to cmd.exe
     /// (which searches PATH and knows the shim). Kept pure so the composition is unit-tested.
+    ///
+    /// The cmd.exe path wraps the WHOLE command in one extra pair of quotes: with /s, cmd strips
+    /// exactly the first and last quote of its /c string, so a bare `"exe" ...args-with-quotes...`
+    /// would lose the executable's closing quote and an argument's quote, launching claude with a
+    /// mangled command that dies at once (a broken pipe on the first stdin write). The outer pair
+    /// absorbs that strip and leaves every inner quote - the .cmd path and a --settings path with
+    /// spaces - intact.
     /// </summary>
     public static (string fileName, string arguments) ComposeStart(string? resolvedExecutable, string cliArguments)
     {
         if (string.IsNullOrEmpty(resolvedExecutable))
         {
-            return ("cmd.exe", "/d /s /c claude " + cliArguments);
+            return ("cmd.exe", "/d /s /c \"claude " + cliArguments + "\"");
         }
         if (resolvedExecutable!.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
         {
             return (resolvedExecutable, cliArguments);
         }
-        return ("cmd.exe", "/d /s /c \"" + resolvedExecutable + "\" " + cliArguments);
+        return ("cmd.exe", "/d /s /c \"\"" + resolvedExecutable + "\" " + cliArguments + "\"");
     }
 
     // Best-effort location of the claude executable: an explicit override, then PATH, then the
