@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using EnvDTE;
 using EnvDTE80;
 using Microsoft.VisualStudio.Shell;
@@ -60,10 +62,28 @@ internal sealed class AgentPanelControl : UserControl
         public ComboBoxItem? Item; // its entry in the switcher, so the title can be refreshed
     }
 
+    // An image waiting to be sent: its bytes (for the CLI) and a thumbnail (for the chip and echo).
+    private sealed class PendingImage
+    {
+        public string Base64 = string.Empty;
+        public string MediaType = "image/png";
+        public ImageSource? Thumb;
+    }
+
+    // A turn that couldn't send yet because one was already running: its text and its images.
+    private sealed class PendingTurn
+    {
+        public string Text = string.Empty;
+        public List<ImageAttachment> Images = new List<ImageAttachment>();
+    }
+
     private readonly StackPanel _messages;
     private readonly ScrollViewer _scroller;
     private readonly TextBox _input;
     private readonly TextBlock _placeholder;
+    private readonly WrapPanel _attachStrip = new WrapPanel { Margin = new Thickness(0, 0, 0, 6), Visibility = Visibility.Collapsed };
+    private readonly List<PendingImage> _pending = new List<PendingImage>();
+    private Border? _inputBorder;
     private readonly TextBlock _status;
     private readonly ComboBox _modelCombo;
     private readonly ComboBox _modeCombo;
@@ -90,7 +110,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["copy"] = "Copy", ["copied"] = "Copied", ["session"] = "session",
                 ["allow"] = "Allow", ["deny"] = "Deny", ["always"] = "Always allow",
                 ["wantsToRun"] = "wants to run", ["allowed"] = "Allowed", ["denied"] = "Denied",
-                ["edit"] = "Edit", ["accent"] = "Accent",
+                ["edit"] = "Edit", ["accent"] = "Accent", ["attachHint"] = "Attach an image",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -104,13 +124,13 @@ internal sealed class AgentPanelControl : UserControl
                 ["copy"] = "Kopyala", ["copied"] = "Kopyalandi", ["session"] = "oturum",
                 ["allow"] = "Izin ver", ["deny"] = "Reddet", ["always"] = "Hep izin ver",
                 ["wantsToRun"] = "calistirmak istiyor", ["allowed"] = "Izin verildi", ["denied"] = "Reddedildi",
-                ["edit"] = "Duzenle", ["accent"] = "Vurgu",
+                ["edit"] = "Duzenle", ["accent"] = "Vurgu", ["attachHint"] = "Gorsel ekle",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
     private string _lang = "en";
 
-    private readonly System.Collections.Generic.Queue<string> _queue = new System.Collections.Generic.Queue<string>();
+    private readonly System.Collections.Generic.Queue<PendingTurn> _queue = new System.Collections.Generic.Queue<PendingTurn>();
     private readonly System.Windows.Threading.DispatcherTimer _renderTimer;
     private Conversation _current = new Conversation();
     private ClaudeCliSession? _session;
@@ -165,6 +185,7 @@ internal sealed class AgentPanelControl : UserControl
         _input.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         _input.SetResourceReference(TextBox.CaretBrushProperty, VsBrushes.ToolWindowTextKey);
         _input.PreviewKeyDown += OnInputKeyDown;
+        _input.AllowDrop = false; // let image drops fall through to the border's handler
 
         _placeholder = new TextBlock
         {
@@ -356,23 +377,39 @@ internal sealed class AgentPanelControl : UserControl
         inputGrid.Children.Add(_input);
         inputGrid.Children.Add(_placeholder);
 
+        var attach = MakeIconButton("+", "attachHint", PickImages);
+        attach.VerticalAlignment = VerticalAlignment.Bottom;
+        DockPanel.SetDock(attach, Dock.Left);
+
         var send = MakeAccentButton("send", () => _ = SendAsync());
         send.VerticalAlignment = VerticalAlignment.Bottom;
         DockPanel.SetDock(send, Dock.Right);
 
         var inputRow = new DockPanel { LastChildFill = true };
+        inputRow.Children.Add(attach);
         inputRow.Children.Add(send);
         inputRow.Children.Add(inputGrid);
+
+        // The chip strip sits above the input line; both live in one column inside the rounded border.
+        var inner = new StackPanel();
+        inner.Children.Add(_attachStrip);
+        inner.Children.Add(inputRow);
 
         var inputBorder = new Border
         {
             CornerRadius = new CornerRadius(10),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(10, 8, 8, 8),
-            Child = inputRow,
+            Child = inner,
+            AllowDrop = true,
         };
         inputBorder.SetResourceReference(Border.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
         inputBorder.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+        inputBorder.DragEnter += OnInputDragOver;
+        inputBorder.DragOver += OnInputDragOver;
+        inputBorder.DragLeave += (_, __) => inputBorder.BorderThickness = new Thickness(1);
+        inputBorder.Drop += OnInputDrop;
+        _inputBorder = inputBorder;
 
         var composer = new StackPanel { Margin = new Thickness(12, 6, 12, 12) };
         composer.Children.Add(statusRow);
@@ -380,13 +417,20 @@ internal sealed class AgentPanelControl : UserControl
         return composer;
     }
 
-    // Enter sends; Shift+Enter inserts a newline.
+    // Enter sends; Shift+Enter inserts a newline. Ctrl+V pastes an image if the clipboard holds one.
     private void OnInputKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
         {
             e.Handled = true;
             _ = SendAsync();
+            return;
+        }
+
+        if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) != 0 && ClipboardHasImage())
+        {
+            e.Handled = true; // don't also paste the image's file path as text
+            AddClipboardImage();
         }
     }
 
@@ -394,30 +438,34 @@ internal sealed class AgentPanelControl : UserControl
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(); // establish the UI thread
         string text = _input.Text?.Trim() ?? string.Empty;
-        if (text.Length == 0) return;
+        List<PendingImage> images = TakePending();
+        if (text.Length == 0 && images.Count == 0) return;
 
         _input.Clear();
-        AddUserBubble(text);
+        AddUserBubble(text, images);
         bool firstInChat = _current.Messages.Count == 0;
-        _current.Messages.Add((true, text));
-        if (firstInChat) SetConversationTitle(_current, text);
+        string stored = text.Length > 0 ? text : "(image)";
+        _current.Messages.Add((true, stored));
+        if (firstInChat) SetConversationTitle(_current, stored);
+
+        List<ImageAttachment> payload = ToAttachments(images);
 
         // The input stays live during a turn so the next message can be composed. If a turn is
         // running, queue this one and send it when the turn ends, instead of dropping it or
         // interleaving two turns on one session.
         if (_busy)
         {
-            _queue.Enqueue(text);
+            _queue.Enqueue(new PendingTurn { Text = text, Images = payload });
             _status.Text = "Queued - it will send when the current turn ends.";
             return;
         }
 
-        await RunTurnAsync(text);
+        await RunTurnAsync(text, payload);
     }
 
     // Runs one turn: opens (or reuses) the session, adds the streaming reply bubble and sends the
     // text. Used both for a fresh message and for draining the queue.
-    private async System.Threading.Tasks.Task RunTurnAsync(string text)
+    private async System.Threading.Tasks.Task RunTurnAsync(string text, List<ImageAttachment>? images)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         try
@@ -428,7 +476,7 @@ internal sealed class AgentPanelControl : UserControl
             _renderPending = false;
             _renderTimer.Start();
             SetBusy(true);
-            await _session!.SendAsync(text);
+            await _session!.SendAsync(text, images);
         }
         catch (Exception ex)
         {
@@ -536,15 +584,39 @@ internal sealed class AgentPanelControl : UserControl
     }
 
     // A user's turn: plain text in an accent bubble, right-aligned, with Copy and Edit under it.
-    private void AddUserBubble(string text)
+    private void AddUserBubble(string text) => AddUserBubble(text, null);
+
+    private void AddUserBubble(string text, List<PendingImage>? images)
     {
-        var content = new TextBlock
+        var stack = new StackPanel();
+
+        if (images != null && images.Count > 0)
         {
-            Text = text,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = OnAccent,
-        };
-        StackPanel column = AddMessageColumn(content, isUser: true);
+            var strip = new WrapPanel { Margin = new Thickness(0, 0, 0, text.Length > 0 ? 6 : 0) };
+            foreach (PendingImage img in images)
+            {
+                strip.Children.Add(new Image
+                {
+                    Source = img.Thumb,
+                    Height = 54,
+                    Margin = new Thickness(0, 0, 6, 0),
+                    Stretch = Stretch.Uniform,
+                });
+            }
+            stack.Children.Add(strip);
+        }
+
+        if (text.Length > 0)
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = text,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = OnAccent,
+            });
+        }
+
+        StackPanel column = AddMessageColumn(stack, isUser: true);
         AppendActions(column, () => text, isUser: true);
     }
 
@@ -823,8 +895,8 @@ internal sealed class AgentPanelControl : UserControl
     private void DrainQueue()
     {
         if (_busy || _queue.Count == 0) return;
-        string next = _queue.Dequeue();
-        _ = RunTurnAsync(next);
+        PendingTurn next = _queue.Dequeue();
+        _ = RunTurnAsync(next.Text, next.Images);
     }
 
     // Paints the agent's live to-do list: a dot per item coloured by state, the current one in bold.
@@ -1352,6 +1424,207 @@ internal sealed class AgentPanelControl : UserControl
         button.MouseLeave += (_, __) => button.Opacity = 1.0;
         button.MouseLeftButtonUp += (_, __) => onClick();
         return button;
+    }
+
+    // A single-glyph round button (the attach +), with a localized tooltip.
+    private Border MakeIconButton(string glyph, string tipKey, Action onClick)
+    {
+        var label = new TextBlock
+        {
+            Text = glyph,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        var button = new Border
+        {
+            Child = label,
+            Width = 30,
+            Height = 30,
+            CornerRadius = new CornerRadius(8),
+            Background = Brushes.Transparent,
+            Cursor = Cursors.Hand,
+            Margin = new Thickness(0, 0, 6, 0),
+        };
+        Bind(() => button.ToolTip = Loc(tipKey));
+        button.MouseEnter += (_, __) => button.Opacity = 0.6;
+        button.MouseLeave += (_, __) => button.Opacity = 1.0;
+        button.MouseLeftButtonUp += (_, __) => onClick();
+        return button;
+    }
+
+    // --- Attachments ---------------------------------------------------------------------------
+
+    // The image formats the model accepts, and the extensions that map to each media type.
+    private static readonly Dictionary<string, string> ImageTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        [".png"] = "image/png", [".jpg"] = "image/jpeg", [".jpeg"] = "image/jpeg",
+        [".gif"] = "image/gif", [".webp"] = "image/webp",
+    };
+
+    private void PickImages()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Multiselect = true,
+            Filter = "Images|*.png;*.jpg;*.jpeg;*.gif;*.webp",
+        };
+        if (dlg.ShowDialog() != true) return;
+        foreach (string path in dlg.FileNames) AddImageFromFile(path);
+    }
+
+    private void OnInputDragOver(object sender, DragEventArgs e)
+    {
+        bool ok = e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.Bitmap);
+        e.Effects = ok ? DragDropEffects.Copy : DragDropEffects.None;
+        if (ok && _inputBorder != null) _inputBorder.BorderThickness = new Thickness(2);
+        e.Handled = true;
+    }
+
+    private void OnInputDrop(object sender, DragEventArgs e)
+    {
+        if (_inputBorder != null) _inputBorder.BorderThickness = new Thickness(1);
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
+        {
+            foreach (string f in files)
+            {
+                if (ImageTypes.ContainsKey(Path.GetExtension(f))) AddImageFromFile(f);
+            }
+        }
+        else if (e.Data.GetData(DataFormats.Bitmap) is BitmapSource bmp)
+        {
+            AddImageFromBitmap(bmp);
+        }
+        e.Handled = true;
+    }
+
+    private static bool ClipboardHasImage()
+    {
+        try { return Clipboard.ContainsImage(); } catch { return false; }
+    }
+
+    private void AddClipboardImage()
+    {
+        try
+        {
+            BitmapSource? bmp = Clipboard.GetImage();
+            if (bmp != null) AddImageFromBitmap(bmp);
+        }
+        catch { /* clipboard busy or empty - nothing to attach */ }
+    }
+
+    private void AddImageFromFile(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length > 8 * 1024 * 1024) return; // skip missing or oversize files
+            byte[] bytes = File.ReadAllBytes(path);
+            string media = ImageTypes.TryGetValue(Path.GetExtension(path), out string m) ? m : "image/png";
+            AddPending(new PendingImage
+            {
+                Base64 = Convert.ToBase64String(bytes),
+                MediaType = media,
+                Thumb = Thumbnail(path),
+            });
+        }
+        catch { /* unreadable file - ignore */ }
+    }
+
+    private void AddImageFromBitmap(BitmapSource bmp)
+    {
+        try
+        {
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(bmp));
+            using (var ms = new MemoryStream())
+            {
+                encoder.Save(ms);
+                AddPending(new PendingImage
+                {
+                    Base64 = Convert.ToBase64String(ms.ToArray()),
+                    MediaType = "image/png",
+                    Thumb = bmp,
+                });
+            }
+        }
+        catch { /* couldn't encode - ignore */ }
+    }
+
+    // A small decoded copy for the chip and echo, so we don't hold the full image in the visual tree.
+    private static ImageSource Thumbnail(string path)
+    {
+        var bmp = new BitmapImage();
+        bmp.BeginInit();
+        bmp.CacheOption = BitmapCacheOption.OnLoad;
+        bmp.DecodePixelHeight = 108;
+        bmp.UriSource = new Uri(path);
+        bmp.EndInit();
+        bmp.Freeze();
+        return bmp;
+    }
+
+    private void AddPending(PendingImage img)
+    {
+        _pending.Add(img);
+        RefreshAttachStrip();
+    }
+
+    // Removes the pending images from the strip and hands them back so the turn can send them.
+    private List<PendingImage> TakePending()
+    {
+        var taken = new List<PendingImage>(_pending);
+        _pending.Clear();
+        RefreshAttachStrip();
+        return taken;
+    }
+
+    private static List<ImageAttachment> ToAttachments(List<PendingImage> images)
+    {
+        var list = new List<ImageAttachment>();
+        foreach (PendingImage img in images)
+        {
+            list.Add(new ImageAttachment { MediaType = img.MediaType, Base64Data = img.Base64 });
+        }
+        return list;
+    }
+
+    // Rebuilds the row of removable thumbnail chips under the composer, hiding it when empty.
+    private void RefreshAttachStrip()
+    {
+        _attachStrip.Children.Clear();
+        foreach (PendingImage img in _pending)
+        {
+            PendingImage captured = img;
+            var thumb = new Image { Source = img.Thumb, Height = 46, Stretch = Stretch.Uniform };
+            var remove = new TextBlock
+            {
+                Text = "x",
+                FontSize = 12,
+                Foreground = OnAccent,
+                Padding = new Thickness(4, 0, 4, 0),
+                Cursor = Cursors.Hand,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+            };
+            var badge = new Border
+            {
+                Background = Accent,
+                CornerRadius = new CornerRadius(7),
+                Margin = new Thickness(0, 0, 0, 0),
+                Child = remove,
+            };
+            var overlay = new Grid { Margin = new Thickness(0, 0, 6, 0) };
+            overlay.Children.Add(thumb);
+            overlay.Children.Add(badge);
+            badge.HorizontalAlignment = HorizontalAlignment.Right;
+            badge.VerticalAlignment = VerticalAlignment.Top;
+            remove.MouseLeftButtonUp += (_, __) => { _pending.Remove(captured); RefreshAttachStrip(); };
+            _attachStrip.Children.Add(overlay);
+        }
+        _attachStrip.Visibility = _pending.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private static string SolutionDirectory()

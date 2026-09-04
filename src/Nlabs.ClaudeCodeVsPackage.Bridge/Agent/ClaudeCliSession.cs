@@ -104,11 +104,14 @@ public sealed class ClaudeCliSession : IDisposable
     }
 
     /// <summary>Sends one user turn to the running session.</summary>
-    public async Task SendAsync(string text)
+    public Task SendAsync(string text) => SendAsync(text, null);
+
+    /// <summary>Sends one user turn, with any attached images, to the running session.</summary>
+    public async Task SendAsync(string text, System.Collections.Generic.IEnumerable<ImageAttachment>? images)
     {
         TextWriter? stdin = _stdin;
         if (stdin == null) return;
-        await stdin.WriteLineAsync(CliStreamProtocol.UserMessage(text)).ConfigureAwait(false);
+        await stdin.WriteLineAsync(CliStreamProtocol.UserMessage(text, images)).ConfigureAwait(false);
         await stdin.FlushAsync().ConfigureAwait(false);
     }
 

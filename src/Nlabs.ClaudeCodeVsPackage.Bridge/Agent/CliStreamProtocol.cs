@@ -29,6 +29,13 @@ public sealed class TodoItem
     public string Status { get; set; } = string.Empty; // pending | in_progress | completed
 }
 
+/// <summary>An image sent with a user turn: its media type and base64 bytes.</summary>
+public sealed class ImageAttachment
+{
+    public string MediaType { get; set; } = "image/png";
+    public string Base64Data { get; set; } = string.Empty;
+}
+
 /// <summary>One parsed event from the CLI's stream-json output.</summary>
 public sealed class CliEvent
 {
@@ -58,19 +65,39 @@ public sealed class CliEvent
 public static class CliStreamProtocol
 {
     /// <summary>The stdin JSONL line for one user turn.</summary>
-    public static string UserMessage(string text)
+    public static string UserMessage(string text) => UserMessage(text, null);
+
+    /// <summary>
+    /// The stdin JSONL line for one user turn, with any attached images. Images ride along as
+    /// base64 blocks in the same content array (the Messages API shape stream-json expects), placed
+    /// before the text so the model sees them as context for the prompt.
+    /// </summary>
+    public static string UserMessage(string text, System.Collections.Generic.IEnumerable<ImageAttachment>? images)
     {
+        var content = new JArray();
+        if (images != null)
+        {
+            foreach (ImageAttachment img in images)
+            {
+                if (img == null || string.IsNullOrEmpty(img.Base64Data)) continue;
+                content.Add(new JObject
+                {
+                    ["type"] = "image",
+                    ["source"] = new JObject
+                    {
+                        ["type"] = "base64",
+                        ["media_type"] = string.IsNullOrEmpty(img.MediaType) ? "image/png" : img.MediaType,
+                        ["data"] = img.Base64Data,
+                    },
+                });
+            }
+        }
+        content.Add(new JObject { ["type"] = "text", ["text"] = text ?? string.Empty });
+
         var message = new JObject
         {
             ["type"] = "user",
-            ["message"] = new JObject
-            {
-                ["role"] = "user",
-                ["content"] = new JArray
-                {
-                    new JObject { ["type"] = "text", ["text"] = text ?? string.Empty },
-                },
-            },
+            ["message"] = new JObject { ["role"] = "user", ["content"] = content },
         };
         return message.ToString(Formatting.None);
     }

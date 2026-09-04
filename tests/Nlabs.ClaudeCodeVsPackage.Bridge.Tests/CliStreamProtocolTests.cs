@@ -19,6 +19,35 @@ public class CliStreamProtocolTests
     }
 
     [Fact]
+    public void UserMessage_carries_attached_images_before_the_text()
+    {
+        var images = new[]
+        {
+            new ImageAttachment { MediaType = "image/png", Base64Data = "QUJD" },
+        };
+        var m = JObject.Parse(CliStreamProtocol.UserMessage("bak", images));
+
+        var content = (JArray)m["message"]!["content"]!;
+        Assert.Equal("image", (string?)content[0]!["type"]);
+        Assert.Equal("base64", (string?)content[0]!["source"]!["type"]);
+        Assert.Equal("image/png", (string?)content[0]!["source"]!["media_type"]);
+        Assert.Equal("QUJD", (string?)content[0]!["source"]!["data"]);
+        Assert.Equal("text", (string?)content[1]!["type"]);
+        Assert.Equal("bak", (string?)content[1]!["text"]);
+    }
+
+    [Fact]
+    public void UserMessage_skips_images_with_no_data()
+    {
+        var images = new[] { new ImageAttachment { Base64Data = "" } };
+        var m = JObject.Parse(CliStreamProtocol.UserMessage("hi", images));
+
+        var content = (JArray)m["message"]!["content"]!;
+        Assert.Single(content);
+        Assert.Equal("text", (string?)content[0]!["type"]);
+    }
+
+    [Fact]
     public void Parse_system_init_reads_model_and_session()
     {
         var e = CliStreamProtocol.Parse(
