@@ -33,6 +33,13 @@
           <ButtonText>Send Selection to Claude Code</ButtonText>
         </Strings>
       </Button>
+
+      <Button guid="guidNlabsCmdSet" id="OpenPanelCommandId" priority="0x0102" type="Button">
+        <Parent guid="guidNlabsCmdSet" id="NlabsToolsGroup" />
+        <Strings>
+          <ButtonText>Open Claude Panel</ButtonText>
+        </Strings>
+      </Button>
     </Buttons>
 
   </Commands>
@@ -53,6 +60,7 @@
       <IDSymbol name="NlabsEditorGroup" value="0x1030" />
       <IDSymbol name="RestartBridgeCommandId" value="0x0100" />
       <IDSymbol name="SendSelectionCommandId" value="0x0101" />
+      <IDSymbol name="OpenPanelCommandId" value="0x0102" />
     </GuidSymbol>
   </Symbols>
 </CommandTable>

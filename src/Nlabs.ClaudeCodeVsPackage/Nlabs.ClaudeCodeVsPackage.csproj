@@ -14,6 +14,11 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
+
+    <!-- The agentic panel is a WPF tool window built in code (no XAML). WPF types come from the
+         framework, so nothing new is bundled into the VSIX - a Visual Studio tool window is WPF
+         already. This only turns on the WPF reference set for this project. -->
+    <UseWPF>true</UseWPF>
     <RootNamespace>Nlabs.ClaudeCodeVsPackage</RootNamespace>
     <AssemblyName>Nlabs.ClaudeCodeVsPackage</AssemblyName>
 

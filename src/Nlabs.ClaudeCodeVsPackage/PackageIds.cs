@@ -17,4 +17,5 @@ internal static class PackageIds
 {
     public const int RestartBridgeCommandId = 0x0100;
     public const int SendSelectionCommandId = 0x0101;
+    public const int OpenPanelCommandId = 0x0102;
 }

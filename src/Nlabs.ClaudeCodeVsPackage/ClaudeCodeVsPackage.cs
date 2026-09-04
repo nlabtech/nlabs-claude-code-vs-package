@@ -3,6 +3,7 @@ using EnvDTE80;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
+using Nlabs.ClaudeCodeVsPackage.AgentPanel;
 using Nlabs.ClaudeCodeVsPackage.Bridge;
 using Nlabs.ClaudeCodeVsPackage.Bridge.Ide;
 using Nlabs.ClaudeCodeVsPackage.Bridge.Mcp;
@@ -33,6 +34,7 @@ namespace Nlabs.ClaudeCodeVsPackage;
 [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
 [ProvideAutoLoad(VSConstants.UICONTEXT.SolutionExists_string, PackageAutoLoadFlags.BackgroundLoad)]
 [ProvideMenuResource("Menus.ctmenu", 1)]
+[ProvideToolWindow(typeof(AgentPanelToolWindow))]
 [Guid(PackageGuidString)]
 public sealed class ClaudeCodeVsPackage : AsyncPackage
 {
@@ -67,6 +69,8 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
                 OnRestartBridge, new CommandID(PackageGuids.CommandSet, PackageIds.RestartBridgeCommandId)));
             commandService.AddCommand(new MenuCommand(
                 OnSendSelection, new CommandID(PackageGuids.CommandSet, PackageIds.SendSelectionCommandId)));
+            commandService.AddCommand(new MenuCommand(
+                OnOpenPanel, new CommandID(PackageGuids.CommandSet, PackageIds.OpenPanelCommandId)));
         }
 
         StartBridge();
@@ -171,6 +175,20 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
 
         string json = IdeNotifications.AtMentioned(doc.FullName, startLine, endLine);
         _ = JoinableTaskFactory.RunAsync(async () => await bridge.SendAsync(json));
+    }
+
+    /// <summary>Opens (creating if needed) the agentic Claude panel tool window.</summary>
+    private void OnOpenPanel(object sender, EventArgs e)
+    {
+        _ = JoinableTaskFactory.RunAsync(async () =>
+        {
+            ToolWindowPane? window = await ShowToolWindowAsync(
+                typeof(AgentPanelToolWindow), id: 0, create: true, cancellationToken: DisposalToken);
+            if (window?.Frame == null)
+            {
+                throw new NotSupportedException("The Claude panel window could not be created.");
+            }
+        });
     }
 
     /// <summary>The directories of the open solution's projects; the CLI treats these as roots.</summary>
