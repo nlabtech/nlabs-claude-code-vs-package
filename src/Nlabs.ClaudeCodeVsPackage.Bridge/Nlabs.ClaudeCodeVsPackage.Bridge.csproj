@@ -18,4 +18,11 @@
     <FileVersion>0.1.0.0</FileVersion>
   </PropertyGroup>
 
+  <!-- JSON for the MCP protocol layer. Visual Studio ships Newtonsoft.Json (with binding
+       redirects), so the runtime assets are excluded here and never bundled in the VSIX;
+       the test project supplies the runtime copy. -->
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" ExcludeAssets="runtime" />
+  </ItemGroup>
+
 </Project>
