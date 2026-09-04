@@ -19,21 +19,32 @@ namespace Nlabs.ClaudeCodeVsPackage.AgentPanel;
 /// shows the turn's cost.
 ///
 /// It is built in plain WPF (no embedded browser): a Visual Studio tool window is WPF already, so
-/// this adds no bundled runtime and cannot clash with the shell's own components - the panel simply
-/// paints with the current theme's brushes. Rich markdown/code rendering is a later enhancement.
+/// this adds no bundled runtime and cannot clash with the shell's own components. The look is hand
+/// styled - a brand header, role-labelled message bubbles, an accent composer with a Send button -
+/// and stays theme-aware: surfaces come from the shell's brushes, and the one fixed colour is the
+/// brand accent, which reads on both light and dark.
 ///
 /// The extension never holds an API key: the session runs on the developer's own Claude
 /// subscription through the CLI. Nothing about the machine or account is shown or logged here.
 /// </summary>
 internal sealed class AgentPanelControl : UserControl
 {
+    // The nLabtech accent - the single fixed colour; everything else is a theme brush so the panel
+    // matches whatever Visual Studio theme is active.
+    private static readonly Brush Accent = Frozen(Color.FromRgb(0x5B, 0x6C, 0xF0));
+    private static readonly Brush AccentHover = Frozen(Color.FromRgb(0x6B, 0x7B, 0xF5));
+    private static readonly Brush OnAccent = Frozen(Color.FromRgb(0xFF, 0xFF, 0xFF));
+    private static readonly Brush AssistantFill = Frozen(Color.FromArgb(0x16, 0x9A, 0xA6, 0xC8));
+    private static readonly FontFamily MonoFont = new FontFamily("Consolas, Cascadia Mono, Courier New");
+
     private readonly StackPanel _messages;
     private readonly ScrollViewer _scroller;
     private readonly TextBox _input;
+    private readonly TextBlock _placeholder;
     private readonly TextBlock _status;
     private readonly ComboBox _modelCombo;
     private readonly ComboBox _modeCombo;
-    private readonly Button _stopButton;
+    private readonly Border _stopButton;
 
     private readonly System.Collections.Generic.Queue<string> _queue = new System.Collections.Generic.Queue<string>();
     private ClaudeCliSession? _session;
@@ -46,7 +57,7 @@ internal sealed class AgentPanelControl : UserControl
         this.SetResourceReference(BackgroundProperty, VsBrushes.ToolWindowBackgroundKey);
         this.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
-        _messages = new StackPanel { Margin = new Thickness(8) };
+        _messages = new StackPanel { Margin = new Thickness(12, 10, 12, 10) };
         _scroller = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -55,9 +66,10 @@ internal sealed class AgentPanelControl : UserControl
 
         _status = new TextBlock
         {
-            Margin = new Thickness(10, 4, 10, 4),
-            Opacity = 0.7,
-            Text = "Claude Code (nLabtech) - type a message and press Enter.",
+            FontSize = 11,
+            Opacity = 0.6,
+            VerticalAlignment = VerticalAlignment.Center,
+            Text = "Type a message and press Enter.",
         };
         _status.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
@@ -66,54 +78,135 @@ internal sealed class AgentPanelControl : UserControl
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
             MinLines = 1,
-            MaxLines = 6,
-            Margin = new Thickness(8),
-            Padding = new Thickness(6),
+            MaxLines = 8,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalAlignment = VerticalAlignment.Center,
         };
-        _input.SetResourceReference(TextBox.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
         _input.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        _input.SetResourceReference(TextBox.CaretBrushProperty, VsBrushes.ToolWindowTextKey);
         _input.PreviewKeyDown += OnInputKeyDown;
+
+        _placeholder = new TextBlock
+        {
+            Text = "Message Claude...",
+            Opacity = 0.45,
+            IsHitTestVisible = false,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(2, 0, 0, 0),
+        };
+        _placeholder.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        // Now that the placeholder exists, toggle it with the input's content.
+        _input.TextChanged += (_, __) => _placeholder.Visibility =
+            string.IsNullOrEmpty(_input.Text) ? Visibility.Visible : Visibility.Collapsed;
 
         _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet") });
         _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits") });
+        _stopButton = MakeGhostButton("Stop", () => _ = StopAsync());
+        _stopButton.Visibility = Visibility.Collapsed; // shown only while a turn is running
 
-        var newButton = new Button
-        {
-            Content = "New session",
-            Padding = new Thickness(8, 2, 8, 2),
-            Margin = new Thickness(0, 0, 10, 0),
-        };
-        newButton.Click += (_, __) => NewSession();
-
-        _stopButton = new Button
-        {
-            Content = "Stop",
-            Padding = new Thickness(8, 2, 8, 2),
-            Margin = new Thickness(10, 0, 0, 0),
-            Visibility = Visibility.Collapsed, // shown only while a turn is running
-        };
-        _stopButton.Click += (_, __) => _ = StopAsync();
-
-        var toolbar = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(8, 8, 8, 0),
-        };
-        toolbar.Children.Add(newButton);
-        toolbar.Children.Add(LabelFor("Model", _modelCombo));
-        toolbar.Children.Add(LabelFor("Permission", _modeCombo));
-        toolbar.Children.Add(_stopButton);
-
-        var root = new DockPanel();
-        DockPanel.SetDock(toolbar, Dock.Top);
-        DockPanel.SetDock(_status, Dock.Top);
-        DockPanel.SetDock(_input, Dock.Bottom);
-        root.Children.Add(toolbar);
-        root.Children.Add(_status);
-        root.Children.Add(_input);
+        var root = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(BuildHeader(), Dock.Top);
+        DockPanel.SetDock(BuildSettingsRow(), Dock.Top);
+        DockPanel.SetDock(BuildComposer(), Dock.Bottom);
+        root.Children.Add(BuildHeader());
+        root.Children.Add(BuildSettingsRow());
+        root.Children.Add(BuildComposer());
         root.Children.Add(_scroller);
         Content = root;
+    }
+
+    // The brand bar: product name plus a subtle nLabtech tag, over a hairline divider.
+    private UIElement BuildHeader()
+    {
+        var title = new TextBlock { FontSize = 14, FontWeight = FontWeights.SemiBold, Text = "Claude Code" };
+        title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var tag = new TextBlock
+        {
+            Text = "nLabtech",
+            FontSize = 11,
+            Margin = new Thickness(8, 2, 0, 0),
+            Opacity = 0.55,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        tag.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var accentDot = new Border
+        {
+            Width = 8,
+            Height = 8,
+            CornerRadius = new CornerRadius(4),
+            Background = Accent,
+            Margin = new Thickness(0, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(accentDot);
+        row.Children.Add(title);
+        row.Children.Add(tag);
+
+        var bar = new Border
+        {
+            Padding = new Thickness(12, 10, 12, 10),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = row,
+        };
+        bar.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+        return bar;
+    }
+
+    // Model, permission and New session, kept visually quiet under the header.
+    private UIElement BuildSettingsRow()
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(12, 8, 12, 2),
+        };
+        row.Children.Add(LabelFor("Model", _modelCombo));
+        row.Children.Add(LabelFor("Permission", _modeCombo));
+        row.Children.Add(MakeGhostButton("New", NewSession));
+        return row;
+    }
+
+    // The bottom dock: a status/stop line over the rounded input + Send button.
+    private UIElement BuildComposer()
+    {
+        var statusRow = new DockPanel { Margin = new Thickness(2, 0, 2, 6) };
+        DockPanel.SetDock(_stopButton, Dock.Right);
+        statusRow.Children.Add(_stopButton);
+        statusRow.Children.Add(_status);
+
+        var inputGrid = new Grid();
+        inputGrid.Children.Add(_input);
+        inputGrid.Children.Add(_placeholder);
+
+        var send = MakeAccentButton("Send", () => _ = SendAsync());
+        send.VerticalAlignment = VerticalAlignment.Bottom;
+        DockPanel.SetDock(send, Dock.Right);
+
+        var inputRow = new DockPanel { LastChildFill = true };
+        inputRow.Children.Add(send);
+        inputRow.Children.Add(inputGrid);
+
+        var inputBorder = new Border
+        {
+            CornerRadius = new CornerRadius(10),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 8, 8, 8),
+            Child = inputRow,
+        };
+        inputBorder.SetResourceReference(Border.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
+        inputBorder.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+
+        var composer = new StackPanel { Margin = new Thickness(12, 6, 12, 12) };
+        composer.Children.Add(statusRow);
+        composer.Children.Add(inputBorder);
+        return composer;
     }
 
     // Enter sends; Shift+Enter inserts a newline.
@@ -133,7 +226,7 @@ internal sealed class AgentPanelControl : UserControl
         if (text.Length == 0) return;
 
         _input.Clear();
-        AddBubble(text, isUser: true);
+        AddUserBubble(text);
 
         // The input stays live during a turn so the next message can be composed. If a turn is
         // running, queue this one and send it when the turn ends, instead of dropping it or
@@ -233,45 +326,69 @@ internal sealed class AgentPanelControl : UserControl
         }
     }
 
-    // A user's turn: plain text, right-aligned. The user typed it, so it needs no markdown pass.
-    private TextBlock AddBubble(string text, bool isUser)
+    // A user's turn: plain text in an accent bubble, right-aligned. The user typed it, so it needs
+    // no markdown pass.
+    private void AddUserBubble(string text)
     {
         var content = new TextBlock
         {
             Text = text,
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(10, 6, 10, 6),
+            Foreground = OnAccent,
         };
-        content.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-        WrapInBubble(content, isUser);
-        return content;
+        AddMessageRow(content, isUser: true);
     }
 
     // Claude's turn: a block container (paragraphs, headings, bullets, code blocks) filled by the
     // markdown renderer as text streams in.
     private StackPanel AddAssistantBubble()
     {
-        var container = new StackPanel { Margin = new Thickness(10, 6, 10, 6) };
-        WrapInBubble(container, isUser: false);
+        var container = new StackPanel();
+        AddMessageRow(container, isUser: false);
         return container;
     }
 
-    private void WrapInBubble(UIElement content, bool isUser)
+    // One message row: a small role label over the bubble, aligned to its side.
+    private void AddMessageRow(UIElement bubbleContent, bool isUser)
     {
-        var bubble = new Border
+        var label = new TextBlock
         {
-            Child = content,
-            CornerRadius = new System.Windows.CornerRadius(8),
-            Margin = new Thickness(0, 4, 0, 4),
-            MaxWidth = 620,
+            Text = isUser ? "You" : "Claude",
+            FontSize = 10.5,
+            Opacity = 0.5,
+            Margin = new Thickness(4, 0, 4, 3),
             HorizontalAlignment = isUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
         };
-        bubble.SetResourceReference(Border.BackgroundProperty,
-            isUser ? VsBrushes.ComboBoxBackgroundKey : VsBrushes.ToolWindowBackgroundKey);
-        bubble.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
-        bubble.BorderThickness = new Thickness(1);
+        label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
-        _messages.Children.Add(bubble);
+        var bubble = new Border
+        {
+            Child = bubbleContent,
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(12, 9, 12, 9),
+            MaxWidth = 560,
+            HorizontalAlignment = isUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+        };
+        if (isUser)
+        {
+            bubble.Background = Accent;
+        }
+        else
+        {
+            bubble.Background = AssistantFill;
+            bubble.BorderThickness = new Thickness(1);
+            bubble.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+        }
+
+        var column = new StackPanel
+        {
+            Margin = new Thickness(0, 5, 0, 5),
+            HorizontalAlignment = isUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+        };
+        column.Children.Add(label);
+        column.Children.Add(bubble);
+
+        _messages.Children.Add(column);
         ScrollToEnd();
     }
 
@@ -303,7 +420,7 @@ internal sealed class AgentPanelControl : UserControl
                     container.Children.Add(BuildBullet(block.Text));
                     break;
                 default:
-                    container.Children.Add(BuildInlineText(block.Text, bold: false, fontSize: 0, topGap: 2));
+                    container.Children.Add(BuildInlineText(block.Text, bold: false, fontSize: 0, topGap: 3));
                     break;
             }
         }
@@ -313,15 +430,15 @@ internal sealed class AgentPanelControl : UserControl
     // the code straight out. An optional language caption sits above it.
     private UIElement BuildCodeBlock(MarkdownBlock block)
     {
-        var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+        var panel = new StackPanel { Margin = new Thickness(0, 6, 0, 4) };
         if (!string.IsNullOrEmpty(block.Language))
         {
             var caption = new TextBlock
             {
                 Text = block.Language,
-                FontSize = 11,
-                Opacity = 0.6,
-                Margin = new Thickness(2, 0, 0, 2),
+                FontSize = 10.5,
+                Opacity = 0.55,
+                Margin = new Thickness(2, 0, 0, 3),
             };
             caption.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
             panel.Children.Add(caption);
@@ -333,24 +450,31 @@ internal sealed class AgentPanelControl : UserControl
             IsReadOnly = true,
             IsReadOnlyCaretVisible = true,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8),
-            FontFamily = new FontFamily("Consolas, Cascadia Mono, Courier New"),
+            Padding = new Thickness(10),
+            FontFamily = MonoFont,
+            FontSize = 12.5,
             TextWrapping = TextWrapping.NoWrap,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
-        code.SetResourceReference(TextBox.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
+        code.SetResourceReference(TextBox.BackgroundProperty, VsBrushes.ToolWindowBackgroundKey);
         code.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         code.SetResourceReference(TextBox.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
-        panel.Children.Add(code);
+
+        var codeBorder = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            ClipToBounds = true,
+            Child = code,
+        };
+        panel.Children.Add(codeBorder);
         return panel;
     }
 
     private UIElement BuildBullet(string text)
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
-        var dot = new TextBlock { Text = "•  ", Margin = new Thickness(0, 0, 0, 0) };
-        dot.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        var dot = new TextBlock { Text = "•  ", Foreground = Accent, FontWeight = FontWeights.Bold };
         row.Children.Add(dot);
         row.Children.Add(BuildInlineText(text, bold: false, fontSize: 0, topGap: 0));
         return row;
@@ -363,6 +487,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, topGap, 0, 0),
+            LineHeight = 18,
         };
         if (fontSize > 0) tb.FontSize = fontSize;
         if (bold) tb.FontWeight = FontWeights.Bold;
@@ -376,10 +501,7 @@ internal sealed class AgentPanelControl : UserControl
                     tb.Inlines.Add(new Run(run.Text) { FontWeight = FontWeights.Bold });
                     break;
                 case MarkdownInlineKind.Code:
-                    tb.Inlines.Add(new Run(run.Text)
-                    {
-                        FontFamily = new FontFamily("Consolas, Cascadia Mono, Courier New"),
-                    });
+                    tb.Inlines.Add(new Run(run.Text) { FontFamily = MonoFont });
                     break;
                 default:
                     tb.Inlines.Add(new Run(run.Text));
@@ -474,7 +596,13 @@ internal sealed class AgentPanelControl : UserControl
 
     private ComboBox MakeCombo((string label, string? value)[] options)
     {
-        var combo = new ComboBox { MinWidth = 120, Margin = new Thickness(0, 0, 10, 0) };
+        var combo = new ComboBox
+        {
+            MinWidth = 118,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 12, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
         foreach (var (label, value) in options)
         {
             combo.Items.Add(new ComboBoxItem { Content = label, Tag = value });
@@ -485,17 +613,68 @@ internal sealed class AgentPanelControl : UserControl
 
     private static UIElement LabelFor(string text, UIElement control)
     {
-        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 6, 0) };
         var label = new TextBlock
         {
-            Text = text + ":",
-            Opacity = 0.7,
-            Margin = new Thickness(0, 0, 4, 0),
+            Text = text,
+            FontSize = 11,
+            Opacity = 0.55,
+            Margin = new Thickness(0, 0, 5, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
+        label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         panel.Children.Add(label);
         panel.Children.Add(control);
         return panel;
+    }
+
+    // A filled accent button (Send). Built as a Border so it is fully rounded and branded, with a
+    // hover tint and a hand cursor - a plain WPF Button cannot be themed this cleanly in code.
+    private Border MakeAccentButton(string text, Action onClick)
+    {
+        var label = new TextBlock
+        {
+            Text = text,
+            Foreground = OnAccent,
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 12,
+        };
+        var button = new Border
+        {
+            Child = label,
+            Background = Accent,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 6, 14, 6),
+            Margin = new Thickness(8, 0, 0, 0),
+            Cursor = Cursors.Hand,
+        };
+        label.HorizontalAlignment = HorizontalAlignment.Center;
+        button.MouseEnter += (_, __) => button.Background = AccentHover;
+        button.MouseLeave += (_, __) => button.Background = Accent;
+        button.MouseLeftButtonUp += (_, __) => onClick();
+        return button;
+    }
+
+    // A quiet outlined button (New, Stop): themed border, no fill, hand cursor.
+    private Border MakeGhostButton(string text, Action onClick)
+    {
+        var label = new TextBlock { Text = text, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        var button = new Border
+        {
+            Child = label,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12, 4, 12, 4),
+            Cursor = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        button.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+        button.MouseEnter += (_, __) => button.Opacity = 0.7;
+        button.MouseLeave += (_, __) => button.Opacity = 1.0;
+        button.MouseLeftButtonUp += (_, __) => onClick();
+        return button;
     }
 
     private static string SolutionDirectory()
@@ -511,6 +690,13 @@ internal sealed class AgentPanelControl : UserControl
         }
         catch { /* fall through to empty */ }
         return string.Empty;
+    }
+
+    private static Brush Frozen(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
     }
 
     public void ShutDown()
