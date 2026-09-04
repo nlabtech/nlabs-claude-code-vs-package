@@ -35,6 +35,9 @@ namespace Nlabs.ClaudeCodeVsPackage
         /// <summary>The package's unique id. The registration (pkgdef) matches on this.</summary>
         public const string PackageGuidString = "952c382f-7793-44ac-beab-e4c14cd9470c";
 
+        /// <summary>Shows agent-proposed changes as a diff; the bridge calls into this.</summary>
+        private DiffSession? _diffSession;
+
         /// <summary>
         /// Package initialization. After the base call we may switch to the main thread,
         /// but we do nothing here yet.
@@ -53,6 +56,9 @@ namespace Nlabs.ClaudeCodeVsPackage
                 var commandId = new CommandID(PackageGuids.CommandSet, PackageIds.RestartBridgeCommandId);
                 commandService.AddCommand(new MenuCommand(OnRestartBridge, commandId));
             }
+
+            // The diff surface the bridge routes agent proposals to.
+            _diffSession = new DiffSession(this);
 
             // Next step (local bridge): will be started here.
         }
