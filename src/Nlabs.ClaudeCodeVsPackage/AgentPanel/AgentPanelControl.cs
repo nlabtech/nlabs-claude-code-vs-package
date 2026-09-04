@@ -47,9 +47,11 @@ internal sealed class AgentPanelControl : UserControl
     private readonly Border _stopButton;
 
     private readonly System.Collections.Generic.Queue<string> _queue = new System.Collections.Generic.Queue<string>();
+    private readonly System.Windows.Threading.DispatcherTimer _renderTimer;
     private ClaudeCliSession? _session;
     private StackPanel? _streamingContainer;
-    private string _streamingText = string.Empty;
+    private volatile string _streamingText = string.Empty;
+    private volatile bool _renderPending;
     private bool _busy;
 
     public AgentPanelControl()
@@ -106,6 +108,21 @@ internal sealed class AgentPanelControl : UserControl
         _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits") });
         _stopButton = MakeGhostButton("Stop", () => _ = StopAsync());
         _stopButton.Visibility = Visibility.Collapsed; // shown only while a turn is running
+
+        // Streaming deltas arrive far faster than a full re-render can keep up, so they only mark the
+        // reply dirty; this timer repaints it a few times a second. That keeps the UI responsive on a
+        // long reply instead of rebuilding the whole message tree on every token.
+        _renderTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(90),
+        };
+        _renderTimer.Tick += (_, __) =>
+        {
+            if (!_renderPending) return;
+            _renderPending = false;
+            RenderStreaming();
+            ScrollToEnd();
+        };
 
         var root = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(BuildHeader(), Dock.Top);
@@ -251,6 +268,8 @@ internal sealed class AgentPanelControl : UserControl
             EnsureSession();
             _streamingText = string.Empty;
             _streamingContainer = AddAssistantBubble();
+            _renderPending = false;
+            _renderTimer.Start();
             SetBusy(true);
             await _session!.SendAsync(text);
         }
@@ -294,10 +313,11 @@ internal sealed class AgentPanelControl : UserControl
                 break;
 
             case CliEventKind.StreamDelta:
+                // Accumulate and mark dirty; the render timer repaints on its own cadence.
                 if (!string.IsNullOrEmpty(e.Text))
                 {
                     _streamingText += e.Text;
-                    OnUi(() => { RenderStreaming(); ScrollToEnd(); });
+                    _renderPending = true;
                 }
                 break;
 
@@ -305,13 +325,17 @@ internal sealed class AgentPanelControl : UserControl
                 if (!string.IsNullOrEmpty(e.Text))
                 {
                     _streamingText = e.Text!;
-                    OnUi(() => { RenderStreaming(); ScrollToEnd(); });
+                    _renderPending = true;
                 }
                 break;
 
             case CliEventKind.Result:
                 OnUi(() =>
                 {
+                    // Final repaint so the last tokens show, then stop streaming.
+                    _renderTimer.Stop();
+                    _renderPending = false;
+                    RenderStreaming();
                     _streamingContainer = null;
                     SetBusy(false);
                     if (e.TotalCostUsd.HasValue)
@@ -529,6 +553,8 @@ internal sealed class AgentPanelControl : UserControl
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         if (!_busy) return;
+        _renderTimer.Stop();
+        _renderPending = false;
         _queue.Clear();
         _session?.Cancel();
         _session = null;
@@ -567,6 +593,8 @@ internal sealed class AgentPanelControl : UserControl
     // with the currently selected model and permission mode.
     private void NewSession()
     {
+        _renderTimer.Stop();
+        _renderPending = false;
         _session?.Dispose();
         _session = null;
         _streamingContainer = null;
