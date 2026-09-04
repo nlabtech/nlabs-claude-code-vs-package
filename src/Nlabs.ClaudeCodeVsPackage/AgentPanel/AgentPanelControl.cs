@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -111,6 +112,8 @@ internal sealed class AgentPanelControl : UserControl
     private ApprovalService? _approval;
     private string? _hookScriptPath;
     private readonly System.Collections.Generic.HashSet<string> _alwaysAllow = new System.Collections.Generic.HashSet<string>();
+    private readonly ConversationStore _store = new ConversationStore();
+    private string _workspaceKey = string.Empty;
 
     public AgentPanelControl()
     {
@@ -176,7 +179,10 @@ internal sealed class AgentPanelControl : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
         _convCombo.SelectionChanged += OnConversationSelected;
-        RegisterConversation(_current, select: true);
+        // The tool window always builds its content on the UI thread, so this UI-thread call is safe.
+#pragma warning disable VSTHRD010
+        LoadConversations();
+#pragma warning restore VSTHRD010
 
         _langCombo = new ComboBox { MinWidth = 90, FontSize = 12, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
         _langCombo.Items.Add(new ComboBoxItem { Content = "English", Tag = "en" });
@@ -450,7 +456,7 @@ internal sealed class AgentPanelControl : UserControl
         switch (e.Kind)
         {
             case CliEventKind.SystemInit:
-                if (!string.IsNullOrEmpty(e.SessionId)) OnUi(() => _current.CliSessionId = e.SessionId);
+                if (!string.IsNullOrEmpty(e.SessionId)) OnUi(() => { _current.CliSessionId = e.SessionId; SaveConversations(); });
                 if (!string.IsNullOrEmpty(e.Model)) OnUi(() => _status.Text = "Model: " + e.Model);
                 break;
 
@@ -495,6 +501,7 @@ internal sealed class AgentPanelControl : UserControl
                             ? "Turn failed."
                             : string.Format("${0:0.0000} · {1} ${2:0.0000}", e.TotalCostUsd.Value, Loc("session"), _sessionCost);
                     }
+                    SaveConversations();
                     DrainQueue();
                 });
                 break;
@@ -866,6 +873,7 @@ internal sealed class AgentPanelControl : UserControl
         var c = new Conversation();
         RegisterConversation(c, select: true);
         SwitchTo(c);
+        SaveConversations();
     }
 
     // Removes the current chat; keeps at least one around (clearing the last one just resets it).
@@ -877,6 +885,7 @@ internal sealed class AgentPanelControl : UserControl
             _current.CliSessionId = null;
             SetConversationTitle(_current, "New chat");
             SwitchTo(_current);
+            SaveConversations();
             return;
         }
 
@@ -893,6 +902,7 @@ internal sealed class AgentPanelControl : UserControl
         if (removing != null) _convCombo.Items.Remove(removing);
         _switching = false;
         if (next != null) SwitchTo(next);
+        SaveConversations();
     }
 
     private void RegisterConversation(Conversation c, bool select)
@@ -903,6 +913,56 @@ internal sealed class AgentPanelControl : UserControl
         _convCombo.Items.Add(item);
         if (select) _convCombo.SelectedItem = item;
         _switching = false;
+    }
+
+    // Restores this workspace's chats from disk, or starts a single fresh one.
+    private void LoadConversations()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        _workspaceKey = SolutionDirectory();
+        List<ConversationRecord> records = _store.Load(_workspaceKey);
+        if (records.Count == 0)
+        {
+            RegisterConversation(_current, select: true);
+            return;
+        }
+
+        Conversation? first = null;
+        foreach (ConversationRecord rec in records)
+        {
+            var c = new Conversation { Title = rec.Title, CliSessionId = rec.CliSessionId };
+            foreach (MessageRecord m in rec.Messages) c.Messages.Add((m.IsUser, m.Text));
+            RegisterConversation(c, select: false);
+            if (first == null) first = c;
+        }
+
+        if (first != null)
+        {
+            _current = first;
+            _switching = true;
+            if (first.Item != null) _convCombo.SelectedItem = first.Item;
+            _switching = false;
+            RebuildMessages();
+        }
+    }
+
+    // Writes every chat (title, session id, messages) back to disk. Called whenever they change.
+    private void SaveConversations()
+    {
+        var records = new List<ConversationRecord>();
+        foreach (object obj in _convCombo.Items)
+        {
+            if (obj is ComboBoxItem it && it.Tag is Conversation c)
+            {
+                var rec = new ConversationRecord { Title = c.Title, CliSessionId = c.CliSessionId };
+                foreach (var (isUser, text) in c.Messages)
+                {
+                    rec.Messages.Add(new MessageRecord { IsUser = isUser, Text = text });
+                }
+                records.Add(rec);
+            }
+        }
+        _store.Save(_workspaceKey, records);
     }
 
     private void OnConversationSelected(object sender, SelectionChangedEventArgs e)
