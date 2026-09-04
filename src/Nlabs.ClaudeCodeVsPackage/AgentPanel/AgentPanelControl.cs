@@ -34,6 +34,7 @@ internal sealed class AgentPanelControl : UserControl
     private ClaudeCliSession? _session;
     private TextBlock? _streamingReply;
     private string _streamingText = string.Empty;
+    private bool _busy;
 
     public AgentPanelControl()
     {
@@ -114,7 +115,7 @@ internal sealed class AgentPanelControl : UserControl
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(); // establish the UI thread
         string text = _input.Text?.Trim() ?? string.Empty;
-        if (text.Length == 0) return;
+        if (text.Length == 0 || _busy) return; // one turn at a time
 
         _input.Clear();
         AddBubble(text, isUser: true);
@@ -124,10 +125,12 @@ internal sealed class AgentPanelControl : UserControl
             EnsureSession();
             _streamingText = string.Empty;
             _streamingReply = AddBubble(string.Empty, isUser: false);
+            SetBusy(true);
             await _session!.SendAsync(text);
         }
         catch (Exception ex)
         {
+            SetBusy(false);
             _status.Text = "Could not reach the Claude CLI: " + ex.Message;
         }
     }
@@ -140,7 +143,7 @@ internal sealed class AgentPanelControl : UserControl
 
         _session = new ClaudeCliSession();
         _session.Event += OnCliEvent;
-        _session.Exited += (_, __) => OnUi(() => _status.Text = "Session ended.");
+        _session.Exited += (_, __) => OnUi(() => { SetBusy(false); _status.Text = "Session ended."; });
         ClaudeCliOptions options = CurrentOptions();
         options.SettingsPath = WriteSafetySettings();
         _session.Start(SolutionDirectory(), options);
@@ -176,6 +179,7 @@ internal sealed class AgentPanelControl : UserControl
                 OnUi(() =>
                 {
                     _streamingReply = null;
+                    SetBusy(false);
                     if (e.TotalCostUsd.HasValue)
                     {
                         _status.Text = e.IsError
@@ -215,6 +219,15 @@ internal sealed class AgentPanelControl : UserControl
         return content;
     }
 
+    // While a turn is running, lock the input so turns cannot interleave, and show progress.
+    private void SetBusy(bool busy)
+    {
+        _busy = busy;
+        _input.IsEnabled = !busy;
+        if (busy) { _status.Text = "Claude is working..."; }
+        else { _input.Focus(); }
+    }
+
     private void ScrollToEnd() => _scroller.ScrollToEnd();
 
     // CLI events arrive on the pump thread; this marshals each update to the panel's own WPF
@@ -240,6 +253,7 @@ internal sealed class AgentPanelControl : UserControl
         _session = null;
         _streamingReply = null;
         _messages.Children.Clear();
+        SetBusy(false);
         _status.Text = "New session - the model and permission apply on your next message.";
     }
 
