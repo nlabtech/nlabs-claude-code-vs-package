@@ -107,10 +107,17 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge
                 if (_activeSocket != null) { Reject(context, 409); return; }
             }
 
+            // Handshake trap: the client requests a WebSocket subprotocol via
+            // Sec-WebSocket-Protocol. If the server does not echo the selected
+            // subprotocol back, the client silently drops the connection - and the
+            // symptom looks like a timeout ("timed out after 30s"), pointing at the
+            // wrong place entirely. So we echo the first requested subprotocol.
+            string? requestedSubprotocol = FirstSubprotocol(request.Headers["Sec-WebSocket-Protocol"]);
+
             HttpListenerWebSocketContext wsContext;
             try
             {
-                wsContext = await context.AcceptWebSocketAsync(subProtocol: null).ConfigureAwait(false);
+                wsContext = await context.AcceptWebSocketAsync(subProtocol: requestedSubprotocol).ConfigureAwait(false);
             }
             catch
             {
@@ -217,6 +224,22 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge
         }
 
         // --- helpers ---
+
+        /// <summary>
+        /// Returns the first subprotocol from a comma-separated Sec-WebSocket-Protocol
+        /// header, or null if none. The value must be echoed back on accept, otherwise
+        /// the client drops the handshake.
+        /// </summary>
+        private static string? FirstSubprotocol(string? header)
+        {
+            if (string.IsNullOrWhiteSpace(header)) { return null; }
+            foreach (string part in header!.Split(','))
+            {
+                string trimmed = part.Trim();
+                if (trimmed.Length > 0) { return trimmed; }
+            }
+            return null;
+        }
 
         private static int FindFreePort()
         {
