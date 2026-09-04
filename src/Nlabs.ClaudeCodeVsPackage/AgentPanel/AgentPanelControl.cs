@@ -36,18 +36,19 @@ internal sealed class AgentPanelControl : UserControl
     // These two are kept mutable and shared: every element paints with the same brush instance, so
     // recolouring in place (ApplyAccent) repaints the header dot, Send, the user bubbles and the task
     // ticks at once, with no rebuild. The final Claude palette comes in the design pass.
-    private readonly SolidColorBrush Accent = new SolidColorBrush(Color.FromRgb(0x5B, 0x6C, 0xF0));
-    private readonly SolidColorBrush AccentHover = new SolidColorBrush(Color.FromRgb(0x6B, 0x7B, 0xF5));
+    private readonly SolidColorBrush Accent = new SolidColorBrush(Color.FromRgb(0xD9, 0x77, 0x57));
+    private readonly SolidColorBrush AccentHover = new SolidColorBrush(Color.FromRgb(0xE0, 0x88, 0x6B));
+    // A faint accent-tinted fill for the user's own turn - the same hue as the accent, barely there.
+    private readonly SolidColorBrush UserFill = new SolidColorBrush(Color.FromArgb(0x1F, 0xD9, 0x77, 0x57));
     private static readonly Brush OnAccent = Frozen(Color.FromRgb(0xFF, 0xFF, 0xFF));
-    private static readonly Brush AssistantFill = Frozen(Color.FromArgb(0x16, 0x9A, 0xA6, 0xC8));
 
-    // The accent choices offered in the settings row. Names stay untranslated - they're colour names.
+    // The accent choices. Claude's warm tone is the default; the rest are alternatives.
     private static readonly (string Name, Color Color)[] Accents =
     {
+        ("Claude", Color.FromRgb(0xD9, 0x77, 0x57)),
         ("Indigo", Color.FromRgb(0x5B, 0x6C, 0xF0)),
         ("Violet", Color.FromRgb(0x8B, 0x5C, 0xF6)),
         ("Teal",   Color.FromRgb(0x14, 0xB8, 0xA6)),
-        ("Amber",  Color.FromRgb(0xD9, 0x77, 0x06)),
         ("Rose",   Color.FromRgb(0xE1, 0x1D, 0x48)),
     };
     private static readonly FontFamily MonoFont = new FontFamily("Consolas, Cascadia Mono, Courier New");
@@ -90,7 +91,8 @@ internal sealed class AgentPanelControl : UserControl
     private readonly ComboBox _convCombo;
     private readonly ComboBox _langCombo;
     private readonly ComboBox _accentCombo;
-    private readonly Border _stopButton;
+    private Border? _primary;       // the Send button; becomes Stop while a turn runs
+    private TextBlock? _primaryLabel;
     private readonly Border _tasksBox;
     private readonly StackPanel _tasksList;
 
@@ -100,7 +102,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             ["en"] = new System.Collections.Generic.Dictionary<string, string>
             {
-                ["placeholder"] = "Message Claude...", ["model"] = "Model", ["permission"] = "Permission",
+                ["placeholder"] = "Ask Claude - Enter sends", ["model"] = "Model", ["permission"] = "Permission",
                 ["chat"] = "Chat", ["language"] = "Language", ["new"] = "New", ["delete"] = "Delete",
                 ["send"] = "Send", ["stop"] = "Stop", ["you"] = "You", ["assistant"] = "Claude",
                 ["defaultModel"] = "Default model", ["askEach"] = "Ask each time", ["acceptEdits"] = "Accept edits",
@@ -114,7 +116,7 @@ internal sealed class AgentPanelControl : UserControl
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
-                ["placeholder"] = "Claude'a yaz...", ["model"] = "Model", ["permission"] = "Izin",
+                ["placeholder"] = "Claude'a bir sey sor - Enter gonderir", ["model"] = "Model", ["permission"] = "Izin",
                 ["chat"] = "Sohbet", ["language"] = "Dil", ["new"] = "Yeni", ["delete"] = "Sil",
                 ["send"] = "Gonder", ["stop"] = "Durdur", ["you"] = "Sen", ["assistant"] = "Claude",
                 ["defaultModel"] = "Varsayilan model", ["askEach"] = "Her seferinde sor", ["acceptEdits"] = "Duzenlemeleri kabul et",
@@ -233,8 +235,6 @@ internal sealed class AgentPanelControl : UserControl
         _accentCombo.SelectedIndex = 0;
         _accentCombo.SelectionChanged += (_, __) => OnAccentChanged();
 
-        _stopButton = MakeGhostButton("stop", () => _ = StopAsync());
-
         // Live to-do strip - hidden until the agent writes a task list, updated as it progresses.
         _tasksList = new StackPanel();
         var tasksHeader = new TextBlock { FontSize = 11, FontWeight = FontWeights.SemiBold, Opacity = 0.7, Margin = new Thickness(0, 0, 0, 5) };
@@ -250,11 +250,10 @@ internal sealed class AgentPanelControl : UserControl
             Padding = new Thickness(10, 8, 10, 8),
             CornerRadius = new CornerRadius(8),
             BorderThickness = new Thickness(1),
-            Background = AssistantFill,
+            Background = UserFill,
             Visibility = Visibility.Collapsed,
         };
         _tasksBox.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
-        _stopButton.Visibility = Visibility.Collapsed; // shown only while a turn is running
 
         // Streaming deltas arrive far faster than a full re-render can keep up, so they only mark the
         // reply dirty; this timer repaints it a few times a second. That keeps the UI responsive on a
@@ -275,18 +274,15 @@ internal sealed class AgentPanelControl : UserControl
         // call would try to re-parent the same element and throw.
         UIElement header = BuildHeader();
         UIElement chatRow = BuildChatRow();
-        UIElement settingsRow = BuildSettingsRow();
         UIElement composer = BuildComposer();
         DockPanel.SetDock(header, Dock.Top);
         DockPanel.SetDock(chatRow, Dock.Top);
-        DockPanel.SetDock(settingsRow, Dock.Top);
         DockPanel.SetDock(_tasksBox, Dock.Top);
         DockPanel.SetDock(composer, Dock.Bottom);
 
         var root = new DockPanel { LastChildFill = true };
         root.Children.Add(header);
         root.Children.Add(chatRow);
-        root.Children.Add(settingsRow);
         root.Children.Add(_tasksBox);
         root.Children.Add(composer);
         root.Children.Add(_scroller);
@@ -323,14 +319,27 @@ internal sealed class AgentPanelControl : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
-        row.Children.Add(accentDot);
-        row.Children.Add(title);
-        row.Children.Add(tag);
+        var brand = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        brand.Children.Add(accentDot);
+        brand.Children.Add(title);
+        brand.Children.Add(tag);
+
+        // Language and accent live top-right, out of the way of the conversation itself.
+        var prefs = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        _langCombo.Margin = new Thickness(0, 0, 6, 0);
+        _accentCombo.Margin = new Thickness(0);
+        prefs.Children.Add(_langCombo);
+        prefs.Children.Add(_accentCombo);
+
+        var row = new DockPanel { LastChildFill = false };
+        DockPanel.SetDock(brand, Dock.Left);
+        DockPanel.SetDock(prefs, Dock.Right);
+        row.Children.Add(brand);
+        row.Children.Add(prefs);
 
         var bar = new Border
         {
-            Padding = new Thickness(12, 10, 12, 10),
+            Padding = new Thickness(12, 9, 12, 9),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = row,
         };
@@ -354,50 +363,42 @@ internal sealed class AgentPanelControl : UserControl
         return row;
     }
 
-    // Model, permission and language. A WrapPanel lets them flow to a second line in a narrow panel.
-    private UIElement BuildSettingsRow()
-    {
-        var row = new WrapPanel { Margin = new Thickness(12, 6, 12, 2) };
-        row.Children.Add(LabelFor("model", _modelCombo));
-        row.Children.Add(LabelFor("permission", _modeCombo));
-        row.Children.Add(LabelFor("language", _langCombo));
-        row.Children.Add(LabelFor("accent", _accentCombo));
-        return row;
-    }
-
-    // The bottom dock: a status/stop line over the rounded input + Send button.
+    // The bottom dock: the rounded input card (chip strip, text, and a toolbar row with the attach
+    // button on the left and the model/permission pills packed against Send on the right), with a
+    // quiet status line beneath it.
     private UIElement BuildComposer()
     {
-        var statusRow = new DockPanel { Margin = new Thickness(2, 0, 2, 6) };
-        DockPanel.SetDock(_stopButton, Dock.Right);
-        statusRow.Children.Add(_stopButton);
-        statusRow.Children.Add(_status);
-
-        var inputGrid = new Grid();
+        var inputGrid = new Grid { Margin = new Thickness(2, 2, 2, 6) };
         inputGrid.Children.Add(_input);
         inputGrid.Children.Add(_placeholder);
 
-        var attach = MakeIconButton("+", "attachHint", PickImages);
-        attach.VerticalAlignment = VerticalAlignment.Bottom;
-        DockPanel.SetDock(attach, Dock.Left);
+        // Left of the toolbar: the attach button. (More actions join it as those features land.)
+        var leftTools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        leftTools.Children.Add(MakeIconButton("+", "attachHint", PickImages));
 
-        var send = MakeAccentButton("send", () => _ = SendAsync());
-        send.VerticalAlignment = VerticalAlignment.Bottom;
-        DockPanel.SetDock(send, Dock.Right);
+        // Right of the toolbar: the selectors kept tight against the primary button, so a narrow
+        // panel never wraps them away from it.
+        var rightTools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        _modelCombo.Margin = new Thickness(0, 0, 6, 0);
+        _modeCombo.Margin = new Thickness(0, 0, 6, 0);
+        rightTools.Children.Add(_modelCombo);
+        rightTools.Children.Add(_modeCombo);
+        rightTools.Children.Add(BuildPrimaryButton());
 
-        var inputRow = new DockPanel { LastChildFill = true };
-        inputRow.Children.Add(attach);
-        inputRow.Children.Add(send);
-        inputRow.Children.Add(inputGrid);
+        var toolbar = new DockPanel { LastChildFill = false };
+        DockPanel.SetDock(leftTools, Dock.Left);
+        DockPanel.SetDock(rightTools, Dock.Right);
+        toolbar.Children.Add(leftTools);
+        toolbar.Children.Add(rightTools);
 
-        // The chip strip sits above the input line; both live in one column inside the rounded border.
         var inner = new StackPanel();
         inner.Children.Add(_attachStrip);
-        inner.Children.Add(inputRow);
+        inner.Children.Add(inputGrid);
+        inner.Children.Add(toolbar);
 
         var inputBorder = new Border
         {
-            CornerRadius = new CornerRadius(10),
+            CornerRadius = new CornerRadius(12),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(10, 8, 8, 8),
             Child = inner,
@@ -411,10 +412,43 @@ internal sealed class AgentPanelControl : UserControl
         inputBorder.Drop += OnInputDrop;
         _inputBorder = inputBorder;
 
+        var statusBar = new Border
+        {
+            Padding = new Thickness(4, 6, 4, 0),
+            Child = _status,
+        };
+
         var composer = new StackPanel { Margin = new Thickness(12, 6, 12, 12) };
-        composer.Children.Add(statusRow);
         composer.Children.Add(inputBorder);
+        composer.Children.Add(statusBar);
         return composer;
+    }
+
+    // The one primary button: Send while idle, Stop while a turn runs. Same accent, same spot, so the
+    // eye doesn't hunt for a separate stop control.
+    private Border BuildPrimaryButton()
+    {
+        _primaryLabel = new TextBlock
+        {
+            Foreground = OnAccent,
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 12,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        Bind(() => _primaryLabel.Text = Loc(_busy ? "stop" : "send"));
+        _primary = new Border
+        {
+            Child = _primaryLabel,
+            Background = Accent,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(16, 6, 16, 6),
+            Cursor = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _primary.MouseEnter += (_, __) => _primary.Background = AccentHover;
+        _primary.MouseLeave += (_, __) => _primary.Background = Accent;
+        _primary.MouseLeftButtonUp += (_, __) => { if (_busy) _ = StopAsync(); else _ = SendAsync(); };
+        return _primary;
     }
 
     // Enter sends; Shift+Enter inserts a newline. Ctrl+V pastes an image if the clipboard holds one.
@@ -608,12 +642,9 @@ internal sealed class AgentPanelControl : UserControl
 
         if (text.Length > 0)
         {
-            stack.Children.Add(new TextBlock
-            {
-                Text = text,
-                TextWrapping = TextWrapping.Wrap,
-                Foreground = OnAccent,
-            });
+            var body = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap };
+            body.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            stack.Children.Add(body);
         }
 
         StackPanel column = AddMessageColumn(stack, isUser: true);
@@ -643,46 +674,30 @@ internal sealed class AgentPanelControl : UserControl
         AppendActions(column, () => text, isUser: false);
     }
 
-    // One message row: a small role label over the bubble, aligned to its side. Returns the column so
-    // the caller can append an actions strip.
-    private StackPanel AddMessageColumn(UIElement bubbleContent, bool isUser)
+    // One message row, laid out as a flat feed rather than paired bubbles: role reads from shape, not
+    // a label. The user's turn is a faint card with a 2px accent stripe down its left edge; Claude's
+    // is bare markdown, indented to line up with the user's text. Returns the column for the actions.
+    private StackPanel AddMessageColumn(UIElement content, bool isUser)
     {
-        var label = new TextBlock
-        {
-            Text = isUser ? Loc("you") : Loc("assistant"),
-            FontSize = 10.5,
-            Opacity = 0.5,
-            Margin = new Thickness(4, 0, 4, 3),
-            HorizontalAlignment = isUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
-        };
-        label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        var column = new StackPanel { Margin = new Thickness(0, 6, 0, 2) };
 
-        var bubble = new Border
-        {
-            Child = bubbleContent,
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(12, 9, 12, 9),
-            MaxWidth = 560,
-            HorizontalAlignment = isUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
-        };
         if (isUser)
         {
-            bubble.Background = Accent;
+            column.Children.Add(new Border
+            {
+                Child = content,
+                Background = UserFill,
+                BorderBrush = Accent,
+                BorderThickness = new Thickness(2, 0, 0, 0),
+                CornerRadius = new CornerRadius(0, 6, 6, 0),
+                Padding = new Thickness(12, 9, 12, 9),
+            });
         }
         else
         {
-            bubble.Background = AssistantFill;
-            bubble.BorderThickness = new Thickness(1);
-            bubble.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+            if (content is FrameworkElement fe) fe.Margin = new Thickness(14, 2, 8, 2);
+            column.Children.Add(content);
         }
-
-        var column = new StackPanel
-        {
-            Margin = new Thickness(0, 5, 0, 5),
-            HorizontalAlignment = isUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
-        };
-        column.Children.Add(label);
-        column.Children.Add(bubble);
 
         _messages.Children.Add(column);
         ScrollToEnd();
@@ -695,8 +710,8 @@ internal sealed class AgentPanelControl : UserControl
         var actions = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(4, 3, 4, 0),
-            HorizontalAlignment = isUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+            Margin = new Thickness(14, 3, 4, 2),
+            HorizontalAlignment = HorizontalAlignment.Left,
         };
 
         var copy = MakeLink("copy", null);
@@ -865,7 +880,7 @@ internal sealed class AgentPanelControl : UserControl
     private void SetBusy(bool busy)
     {
         _busy = busy;
-        _stopButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        if (_primaryLabel != null) _primaryLabel.Text = Loc(busy ? "stop" : "send");
         if (busy) { _status.Text = Loc("working"); }
         else { _input.Focus(); }
     }
@@ -1243,7 +1258,7 @@ internal sealed class AgentPanelControl : UserControl
             BorderThickness = new Thickness(1),
             Padding = new Thickness(12, 10, 12, 10),
             Margin = new Thickness(0, 6, 0, 6),
-            Background = AssistantFill,
+            Background = UserFill,
         };
         card.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
 
@@ -1300,6 +1315,7 @@ internal sealed class AgentPanelControl : UserControl
     {
         Accent.Color = c;
         AccentHover.Color = Lighten(c, 0.14);
+        UserFill.Color = Color.FromArgb(0x1F, c.R, c.G, c.B);
     }
 
     private static Color Lighten(Color c, double t) => Color.FromRgb(
@@ -1330,7 +1346,7 @@ internal sealed class AgentPanelControl : UserControl
         _prefs.Save(new PanelPreferences
         {
             Language = _lang,
-            Accent = (_accentCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "Indigo",
+            Accent = (_accentCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "Claude",
         });
     }
 

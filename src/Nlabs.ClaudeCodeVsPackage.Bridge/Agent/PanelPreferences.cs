@@ -8,7 +8,7 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Agent;
 public sealed class PanelPreferences
 {
     public string Language { get; set; } = "en";
-    public string Accent { get; set; } = "Indigo";
+    public string Accent { get; set; } = "Claude";
 }
 
 /// <summary>
