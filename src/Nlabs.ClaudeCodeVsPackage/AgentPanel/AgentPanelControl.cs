@@ -180,7 +180,9 @@ internal sealed class AgentPanelControl : UserControl
         _input.TextChanged += (_, __) => _placeholder.Visibility =
             string.IsNullOrEmpty(_input.Text) ? Visibility.Visible : Visibility.Collapsed;
 
-        _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet") });
+        // Tier aliases, not pinned versions - each resolves to the latest model of that tier, so the
+        // list doesn't go stale as new releases land.
+        _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Fable", "fable") });
         _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits") });
         // Localize the wording of the fixed entries (model names stay as-is).
         Bind(() => ((ComboBoxItem)_modelCombo.Items[0]).Content = Loc("defaultModel"));
