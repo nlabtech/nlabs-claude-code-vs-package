@@ -76,6 +76,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["copy"] = "Copy", ["copied"] = "Copied", ["session"] = "session",
                 ["allow"] = "Allow", ["deny"] = "Deny", ["always"] = "Always allow",
                 ["wantsToRun"] = "wants to run", ["allowed"] = "Allowed", ["denied"] = "Denied",
+                ["edit"] = "Edit",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -89,6 +90,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["copy"] = "Kopyala", ["copied"] = "Kopyalandi", ["session"] = "oturum",
                 ["allow"] = "Izin ver", ["deny"] = "Reddet", ["always"] = "Hep izin ver",
                 ["wantsToRun"] = "calistirmak istiyor", ["allowed"] = "Izin verildi", ["denied"] = "Reddedildi",
+                ["edit"] = "Duzenle",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -99,6 +101,7 @@ internal sealed class AgentPanelControl : UserControl
     private Conversation _current = new Conversation();
     private ClaudeCliSession? _session;
     private StackPanel? _streamingContainer;
+    private StackPanel? _streamingColumn;
     private volatile string _streamingText = string.Empty;
     private volatile bool _renderPending;
     private bool _busy;
@@ -474,8 +477,14 @@ internal sealed class AgentPanelControl : UserControl
                     _renderTimer.Stop();
                     _renderPending = false;
                     RenderStreaming();
-                    if (_streamingText.Length > 0) _current.Messages.Add((false, _streamingText));
+                    if (_streamingText.Length > 0)
+                    {
+                        string finalText = _streamingText;
+                        _current.Messages.Add((false, finalText));
+                        if (_streamingColumn != null) AppendActions(_streamingColumn, () => finalText, isUser: false);
+                    }
                     _streamingContainer = null;
+                    _streamingColumn = null;
                     SetBusy(false);
                     if (e.TotalCostUsd.HasValue)
                     {
@@ -490,8 +499,7 @@ internal sealed class AgentPanelControl : UserControl
         }
     }
 
-    // A user's turn: plain text in an accent bubble, right-aligned. The user typed it, so it needs
-    // no markdown pass.
+    // A user's turn: plain text in an accent bubble, right-aligned, with Copy and Edit under it.
     private void AddUserBubble(string text)
     {
         var content = new TextBlock
@@ -500,20 +508,31 @@ internal sealed class AgentPanelControl : UserControl
             TextWrapping = TextWrapping.Wrap,
             Foreground = OnAccent,
         };
-        AddMessageRow(content, isUser: true);
+        StackPanel column = AddMessageColumn(content, isUser: true);
+        AppendActions(column, () => text, isUser: true);
     }
 
-    // Claude's turn: a block container (paragraphs, headings, bullets, code blocks) filled by the
-    // markdown renderer as text streams in.
+    // Claude's turn: a block container filled by the markdown renderer as text streams in. Copy is
+    // added when the turn finishes (the text is complete then).
     private StackPanel AddAssistantBubble()
     {
         var container = new StackPanel();
-        AddMessageRow(container, isUser: false);
+        _streamingColumn = AddMessageColumn(container, isUser: false);
         return container;
     }
 
-    // One message row: a small role label over the bubble, aligned to its side.
-    private void AddMessageRow(UIElement bubbleContent, bool isUser)
+    // A completed assistant message restored from history: rendered and given a Copy action at once.
+    private void AddStoredAssistant(string text)
+    {
+        var container = new StackPanel();
+        StackPanel column = AddMessageColumn(container, isUser: false);
+        RenderMarkdownInto(container, text);
+        AppendActions(column, () => text, isUser: false);
+    }
+
+    // One message row: a small role label over the bubble, aligned to its side. Returns the column so
+    // the caller can append an actions strip.
+    private StackPanel AddMessageColumn(UIElement bubbleContent, bool isUser)
     {
         var label = new TextBlock
         {
@@ -554,6 +573,53 @@ internal sealed class AgentPanelControl : UserControl
 
         _messages.Children.Add(column);
         ScrollToEnd();
+        return column;
+    }
+
+    // A small Copy (and, for the user's own turn, Edit) strip under a message.
+    private void AppendActions(StackPanel column, Func<string> getText, bool isUser)
+    {
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(4, 3, 4, 0),
+            HorizontalAlignment = isUser ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+        };
+
+        var copy = MakeLink("copy", null);
+        copy.MouseLeftButtonUp += (_, __) =>
+        {
+            try { Clipboard.SetText(getText()); copy.Text = Loc("copied"); } catch { }
+        };
+        actions.Children.Add(copy);
+
+        if (isUser)
+        {
+            var edit = MakeLink("edit", () =>
+            {
+                _input.Text = getText();
+                _input.CaretIndex = _input.Text.Length;
+                _input.Focus();
+            });
+            actions.Children.Add(edit);
+        }
+
+        column.Children.Add(actions);
+    }
+
+    private TextBlock MakeLink(string key, Action? onClick)
+    {
+        var link = new TextBlock
+        {
+            FontSize = 10.5,
+            Opacity = 0.5,
+            Cursor = Cursors.Hand,
+            Margin = new Thickness(0, 0, 10, 0),
+        };
+        link.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        Bind(() => link.Text = Loc(key));
+        if (onClick != null) link.MouseLeftButtonUp += (_, __) => onClick();
+        return link;
     }
 
     // Re-renders the in-flight reply from the accumulated text. Cheap enough per delta for the reply
@@ -707,6 +773,7 @@ internal sealed class AgentPanelControl : UserControl
         _session?.Cancel();
         _session = null;
         _streamingContainer = null;
+        _streamingColumn = null;
         SetBusy(false);
         _status.Text = "Stopped - your next message starts a new session.";
     }
@@ -843,6 +910,7 @@ internal sealed class AgentPanelControl : UserControl
         _session?.Dispose();
         _session = null;
         _streamingContainer = null;
+        _streamingColumn = null;
 
         _current = c;
         _switching = true;
@@ -861,15 +929,8 @@ internal sealed class AgentPanelControl : UserControl
         _messages.Children.Clear();
         foreach (var (isUser, text) in _current.Messages)
         {
-            if (isUser)
-            {
-                AddUserBubble(text);
-            }
-            else
-            {
-                StackPanel container = AddAssistantBubble();
-                RenderMarkdownInto(container, text);
-            }
+            if (isUser) AddUserBubble(text);
+            else AddStoredAssistant(text);
         }
         ScrollToEnd();
     }
