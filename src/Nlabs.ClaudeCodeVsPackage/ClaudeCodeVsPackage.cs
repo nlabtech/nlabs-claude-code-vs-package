@@ -35,8 +35,11 @@ namespace Nlabs.ClaudeCodeVsPackage
         /// <summary>The package's unique id. The registration (pkgdef) matches on this.</summary>
         public const string PackageGuidString = "952c382f-7793-44ac-beab-e4c14cd9470c";
 
-        /// <summary>Shows agent-proposed changes as a diff; the bridge calls into this.</summary>
-        private DiffSession? _diffSession;
+        /// <summary>The local WebSocket bridge (127.0.0.1). Started on load, disposed on shutdown.</summary>
+        private Bridge.BridgeServer? _bridge;
+
+        /// <summary>Routes bridge messages to Visual Studio actions.</summary>
+        private BridgeRouter? _router;
 
         /// <summary>
         /// Package initialization. After the base call we may switch to the main thread,
@@ -57,24 +60,50 @@ namespace Nlabs.ClaudeCodeVsPackage
                 commandService.AddCommand(new MenuCommand(OnRestartBridge, commandId));
             }
 
-            // The diff surface the bridge routes agent proposals to.
-            _diffSession = new DiffSession(this);
-
-            // Next step (local bridge): will be started here.
+            // Start the local bridge and wire it to Visual Studio through the router.
+            StartBridge();
         }
 
-        /// <summary>Placeholder handler; wiring to the bridge lifecycle comes later.</summary>
+        /// <summary>Creates the bridge server + router and starts listening on 127.0.0.1.</summary>
+        private void StartBridge()
+        {
+            _bridge = new Bridge.BridgeServer();
+            _router = new BridgeRouter(_bridge, JoinableTaskFactory, this);
+            _bridge.Start();
+        }
+
+        /// <summary>Restarts the bridge and shows the connection info to paste into Claude Code.</summary>
         private void OnRestartBridge(object sender, EventArgs e)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
 
+            _bridge?.Dispose();
+            StartBridge();
+
+            string info =
+                $"Local bridge listening on 127.0.0.1:{_bridge!.Port}\n\n" +
+                "Token (paste into Claude Code):\n" +
+                _bridge.Token;
+
             VsShellUtilities.ShowMessageBox(
                 this,
-                "The local bridge will restart.",
+                info,
                 "Local Bridge",
                 OLEMSGICON.OLEMSGICON_INFO,
                 OLEMSGBUTTON.OLEMSGBUTTON_OK,
                 OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _bridge?.Dispose();
+                _bridge = null;
+                _router = null;
+            }
+
+            base.Dispose(disposing);
         }
     }
 }
