@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -78,6 +79,15 @@ internal sealed class AgentPanelControl : UserControl
         public List<ImageAttachment> Images = new List<ImageAttachment>();
     }
 
+    // One entry in the "/" command menu. A panel command runs locally (Panel set); a forward command
+    // (Panel null) is dropped into the input as "/name " for the CLI to expand when the turn is sent.
+    private sealed class SlashCommand
+    {
+        public string Name = string.Empty;
+        public string Description = string.Empty;
+        public Action? Panel;
+    }
+
     private readonly StackPanel _messages;
     private readonly ScrollViewer _scroller;
     private readonly TextBox _input;
@@ -85,6 +95,8 @@ internal sealed class AgentPanelControl : UserControl
     private readonly WrapPanel _attachStrip = new WrapPanel { Margin = new Thickness(0, 0, 0, 6), Visibility = Visibility.Collapsed };
     private readonly List<PendingImage> _pending = new List<PendingImage>();
     private Border? _inputBorder;
+    private Popup? _slashPopup;   // the "/" command menu, anchored above the input
+    private ListBox? _slashList;
     private readonly TextBlock _status;
     private readonly ComboBox _modelCombo;
     private readonly ComboBox _modeCombo;
@@ -116,6 +128,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["edit"] = "Edit", ["accent"] = "Accent", ["attachHint"] = "Attach an image",
                 ["tokens"] = "tokens", ["defaultEffort"] = "Effort: default",
                 ["pickFolder"] = "Pick folder", ["folderSet"] = "Folder set - your next message starts here.",
+                ["cmdNew"] = "Start a new chat", ["cmdClear"] = "Clear this chat and its context",
+                ["commands"] = "Commands", ["projectCommands"] = "Project commands",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -132,6 +146,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["edit"] = "Duzenle", ["accent"] = "Vurgu", ["attachHint"] = "Gorsel ekle",
                 ["tokens"] = "token", ["defaultEffort"] = "Efor: varsayilan",
                 ["pickFolder"] = "Klasor sec", ["folderSet"] = "Klasor secildi - sonraki mesajin burada baslar.",
+                ["cmdNew"] = "Yeni bir sohbet baslat", ["cmdClear"] = "Bu sohbeti ve baglamini temizle",
+                ["commands"] = "Komutlar", ["projectCommands"] = "Proje komutlari",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -456,6 +472,14 @@ internal sealed class AgentPanelControl : UserControl
         inputBorder.Drop += OnInputDrop;
         _inputBorder = inputBorder;
 
+        // The "/" command menu opens above the input as the developer types a command name. Building the
+        // list reads the project's .claude/commands folder; the panel is on the UI thread here and while
+        // typing, so the solution-service read is safe.
+        Popup slashPopup = BuildSlashPopup(inputBorder);
+#pragma warning disable VSTHRD010
+        _input.TextChanged += (_, __) => UpdateSlashPopup();
+#pragma warning restore VSTHRD010
+
         // The bottom status bar: quiet mini-buttons on the left (the working folder for now; more join
         // it as those features land), the status text and running cost on the right.
         var folderButton = BuildStatusButton(PickFolder, out _folderLabel);
@@ -473,6 +497,7 @@ internal sealed class AgentPanelControl : UserControl
         composer.Children.Add(_workingStrip);
         composer.Children.Add(inputBorder);
         composer.Children.Add(statusBar);
+        composer.Children.Add(slashPopup); // no layout footprint; renders in its own window
         return composer;
     }
 
@@ -506,6 +531,27 @@ internal sealed class AgentPanelControl : UserControl
     // Enter sends; Shift+Enter inserts a newline. Ctrl+V pastes an image if the clipboard holds one.
     private void OnInputKeyDown(object sender, KeyEventArgs e)
     {
+        // While the "/" menu is open it owns the arrow, Enter, Tab and Escape keys: they navigate and
+        // pick a command instead of moving the caret or sending the turn.
+        if (_slashPopup != null && _slashPopup.IsOpen)
+        {
+            switch (e.Key)
+            {
+                case Key.Down: MoveSlash(1); e.Handled = true; return;
+                case Key.Up: MoveSlash(-1); e.Handled = true; return;
+                case Key.Escape: HideSlash(); e.Handled = true; return;
+                case Key.Enter:
+                case Key.Tab:
+                    if (_slashList?.SelectedItem is ListBoxItem it && it.Tag is SlashCommand cmd)
+                    {
+                        RunSlash(cmd);
+                        e.Handled = true;
+                        return;
+                    }
+                    break;
+            }
+        }
+
         if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
         {
             e.Handled = true;
@@ -1658,6 +1704,224 @@ internal sealed class AgentPanelControl : UserControl
             if (_folderLabel != null) _folderLabel.Text = FolderCaption();
             _status.Text = Loc("folderSet");
         }
+    }
+
+    // --- Slash commands ------------------------------------------------------------------------
+
+    // Builds the "/" menu popup once: a themed list anchored above the input. A click picks the item
+    // under the pointer; the arrow keys and Enter are handled in OnInputKeyDown while it is open.
+    private Popup BuildSlashPopup(UIElement anchor)
+    {
+        _slashList = new ListBox
+        {
+            MaxHeight = 260,
+            BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent,
+        };
+        _slashList.SetResourceReference(ListBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        _slashList.PreviewMouseLeftButtonUp += (_, __) =>
+        {
+            if (_slashList.SelectedItem is ListBoxItem it && it.Tag is SlashCommand c) RunSlash(c);
+        };
+
+        var frame = new Border
+        {
+            Child = _slashList,
+            CornerRadius = new CornerRadius(10),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4),
+            MinWidth = 340,
+        };
+        frame.SetResourceReference(Border.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
+        frame.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+
+        _slashPopup = new Popup
+        {
+            Child = frame,
+            PlacementTarget = anchor,
+            Placement = PlacementMode.Top,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            PopupAnimation = PopupAnimation.Fade,
+            VerticalOffset = -6,
+        };
+        return _slashPopup;
+    }
+
+    // Opens/updates the menu as the developer types. It shows only while the line is a bare command
+    // being typed: it starts with "/" and has no space or newline yet (once an argument is typed the
+    // command is chosen and the menu gets out of the way).
+    private void UpdateSlashPopup()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        string text = _input.Text ?? string.Empty;
+        if (!text.StartsWith("/") || text.IndexOf(' ') >= 0 || text.IndexOf('\n') >= 0)
+        {
+            HideSlash();
+            return;
+        }
+
+        string fragment = text.Substring(1);
+        var matches = new List<SlashCommand>();
+        foreach (SlashCommand c in SlashCommands())
+        {
+            if (c.Name.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0) matches.Add(c);
+        }
+        if (matches.Count == 0) { HideSlash(); return; }
+
+        PopulateSlash(matches);
+        if (_slashPopup != null) _slashPopup.IsOpen = true;
+    }
+
+    // Fills the list with the current matches, the first one preselected so Enter picks it at once.
+    private void PopulateSlash(List<SlashCommand> matches)
+    {
+        if (_slashList == null) return;
+        _slashList.Items.Clear();
+        foreach (SlashCommand c in matches)
+        {
+            var name = new TextBlock { Text = "/" + c.Name, FontWeight = FontWeights.SemiBold, FontSize = 12.5 };
+            name.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            var desc = new TextBlock { Text = c.Description, FontSize = 11, Opacity = 0.6, TextTrimming = TextTrimming.CharacterEllipsis };
+            desc.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+            var row = new StackPanel { Margin = new Thickness(6, 3, 6, 3) };
+            row.Children.Add(name);
+            if (!string.IsNullOrEmpty(c.Description)) row.Children.Add(desc);
+
+            _slashList.Items.Add(new ListBoxItem { Content = row, Tag = c, Padding = new Thickness(2) });
+        }
+        _slashList.SelectedIndex = 0;
+    }
+
+    private void MoveSlash(int delta)
+    {
+        if (_slashList == null || _slashList.Items.Count == 0) return;
+        int i = _slashList.SelectedIndex + delta;
+        if (i < 0) i = _slashList.Items.Count - 1;
+        else if (i >= _slashList.Items.Count) i = 0;
+        _slashList.SelectedIndex = i;
+        if (_slashList.SelectedItem is ListBoxItem it) it.BringIntoView();
+    }
+
+    private void HideSlash()
+    {
+        if (_slashPopup != null) _slashPopup.IsOpen = false;
+    }
+
+    // Panel commands run locally and clear the input; forward commands drop "/name " into the input so
+    // an argument can be typed, then Enter sends the whole line for the CLI to expand.
+    private void RunSlash(SlashCommand c)
+    {
+        HideSlash();
+        if (c.Panel != null)
+        {
+            _input.Clear();
+            c.Panel();
+        }
+        else
+        {
+            _input.Text = "/" + c.Name + " ";
+            _input.CaretIndex = _input.Text.Length;
+        }
+        _input.Focus();
+    }
+
+    // The menu contents: the panel's own actions first, then any custom commands discovered in the
+    // project's .claude/commands folder (which the CLI expands when the line is sent).
+    private List<SlashCommand> SlashCommands()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var list = new List<SlashCommand>
+        {
+            new SlashCommand { Name = "new", Description = Loc("cmdNew"), Panel = NewConversation },
+            new SlashCommand { Name = "clear", Description = Loc("cmdClear"), Panel = ClearCurrentChat },
+        };
+        list.AddRange(DiscoverProjectCommands());
+        return list;
+    }
+
+    // Reads the project's custom slash commands from .claude/commands (nested folders become "dir:name",
+    // matching the CLI's own naming). Best-effort: an unreadable tree just yields no extra commands.
+    private List<SlashCommand> DiscoverProjectCommands()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var result = new List<SlashCommand>();
+        try
+        {
+            string dir = WorkingDirectory();
+            if (string.IsNullOrEmpty(dir)) return result;
+            string commandsDir = Path.Combine(dir, ".claude", "commands");
+            if (!Directory.Exists(commandsDir)) return result;
+
+            foreach (string file in Directory.EnumerateFiles(commandsDir, "*.md", SearchOption.AllDirectories))
+            {
+                string rel = file.Substring(commandsDir.Length).TrimStart('\\', '/');
+                string name = rel.Substring(0, rel.Length - ".md".Length).Replace('\\', ':').Replace('/', ':');
+                if (name.Length == 0) continue;
+                result.Add(new SlashCommand { Name = name, Description = FirstMeaningfulLine(file) });
+            }
+        }
+        catch { /* unreadable tree - no custom commands */ }
+        return result;
+    }
+
+    // A short description for a command file: its frontmatter "description:", else the first real line
+    // of body text. Reads only the head of the file and trims to a single tidy line.
+    private static string FirstMeaningfulLine(string file)
+    {
+        try
+        {
+            bool inFrontmatter = false;
+            int seen = 0;
+            foreach (string raw in File.ReadLines(file))
+            {
+                if (++seen > 40) break;
+                string line = raw.Trim();
+                if (seen == 1 && line == "---") { inFrontmatter = true; continue; }
+                if (inFrontmatter)
+                {
+                    if (line == "---") { inFrontmatter = false; continue; }
+                    if (line.StartsWith("description:", StringComparison.OrdinalIgnoreCase))
+                        return Tidy(line.Substring("description:".Length));
+                    continue;
+                }
+                if (line.Length == 0) continue;
+                return Tidy(line.TrimStart('#', ' '));
+            }
+        }
+        catch { /* unreadable - no description */ }
+        return string.Empty;
+    }
+
+    private static string Tidy(string s)
+    {
+        s = s.Trim().Trim('"', '\'');
+        if (s.Length > 72) s = s.Substring(0, 72).TrimEnd() + "...";
+        return s;
+    }
+
+    // Resets the current chat: same effect as the CLI's /clear - drop the running session and forget
+    // this chat's messages and its resume id, so the next message starts a clean context here.
+    private void ClearCurrentChat()
+    {
+        _renderTimer.Stop();
+        _renderPending = false;
+        _queue.Clear();
+        _session?.Dispose();
+        _session = null;
+        _streamingContainer = null;
+        _streamingColumn = null;
+        _streamingTextBlock = null;
+
+        _current.Messages.Clear();
+        _current.CliSessionId = null;
+        SetConversationTitle(_current, "New chat");
+        ClearTasks();
+        RebuildMessages();
+        SetBusy(false);
+        _status.Text = Loc("newChat");
+        SaveConversations();
     }
 
     // --- Attachments ---------------------------------------------------------------------------
