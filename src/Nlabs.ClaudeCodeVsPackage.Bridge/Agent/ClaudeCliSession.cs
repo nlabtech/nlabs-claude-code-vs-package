@@ -71,6 +71,25 @@ public sealed class ClaudeCliSession : IDisposable
 
         Process process = _process;
         _ = Task.Run(() => Pump(process.StandardOutput));
+        // stderr MUST be drained: claude -p --output-format stream-json requires --verbose, which
+        // writes to stderr. If nobody reads it, the pipe fills and the process blocks - no stdout,
+        // a session stuck "working" forever. We read and discard it.
+        _ = Task.Run(() => DrainErrors(process.StandardError));
+    }
+
+    private static void DrainErrors(TextReader reader)
+    {
+        try
+        {
+            while (reader.ReadLine() != null)
+            {
+                // verbose/diagnostic noise on stderr; discarded so the pipe never fills
+            }
+        }
+        catch
+        {
+            // stream closed on exit
+        }
     }
 
     /// <summary>Sends one user turn to the running session.</summary>
