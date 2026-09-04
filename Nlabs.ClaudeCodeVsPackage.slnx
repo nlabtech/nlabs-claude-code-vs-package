@@ -7,4 +7,7 @@
     <Deploy />
   </Project>
   <Project Path="src/Nlabs.ClaudeCodeVsPackage.Bridge/Nlabs.ClaudeCodeVsPackage.Bridge.csproj" />
+  <Folder Name="/tests/">
+    <Project Path="tests/Nlabs.ClaudeCodeVsPackage.Bridge.Tests/Nlabs.ClaudeCodeVsPackage.Bridge.Tests.csproj" />
+  </Folder>
 </Solution>
