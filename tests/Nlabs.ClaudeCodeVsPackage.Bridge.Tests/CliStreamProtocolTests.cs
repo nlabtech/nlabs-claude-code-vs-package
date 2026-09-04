@@ -73,6 +73,16 @@ public class CliStreamProtocolTests
     }
 
     [Fact]
+    public void Stream_message_delta_carries_output_tokens()
+    {
+        var e = CliStreamProtocol.Parse(
+            "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_delta\",\"usage\":{\"output_tokens\":842}}}");
+
+        Assert.Equal(CliEventKind.StreamDelta, e.Kind);
+        Assert.Equal(842, e.OutputTokens);
+    }
+
+    [Fact]
     public void Parse_system_init_reads_model_and_session()
     {
         var e = CliStreamProtocol.Parse(

@@ -113,6 +113,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["allow"] = "Allow", ["deny"] = "Deny", ["always"] = "Always allow",
                 ["wantsToRun"] = "wants to run", ["allowed"] = "Allowed", ["denied"] = "Denied",
                 ["edit"] = "Edit", ["accent"] = "Accent", ["attachHint"] = "Attach an image",
+                ["tokens"] = "tokens",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -127,6 +128,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["allow"] = "Izin ver", ["deny"] = "Reddet", ["always"] = "Hep izin ver",
                 ["wantsToRun"] = "calistirmak istiyor", ["allowed"] = "Izin verildi", ["denied"] = "Reddedildi",
                 ["edit"] = "Duzenle", ["accent"] = "Vurgu", ["attachHint"] = "Gorsel ekle",
+                ["tokens"] = "token",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -134,6 +136,11 @@ internal sealed class AgentPanelControl : UserControl
 
     private readonly System.Collections.Generic.Queue<PendingTurn> _queue = new System.Collections.Generic.Queue<PendingTurn>();
     private readonly System.Windows.Threading.DispatcherTimer _renderTimer;
+    private readonly Border _workingStrip;
+    private readonly TextBlock _workingLabel;
+    private readonly System.Windows.Threading.DispatcherTimer _elapsedTimer;
+    private DateTime _turnStart;
+    private int _turnTokens;
     private Conversation _current = new Conversation();
     private ClaudeCliSession? _session;
     private StackPanel? _streamingContainer;
@@ -254,6 +261,27 @@ internal sealed class AgentPanelControl : UserControl
             Visibility = Visibility.Collapsed,
         };
         _tasksBox.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+
+        // A live "working" strip shown only during a turn: a pulsing accent dot, elapsed seconds and a
+        // running token count, so a long turn visibly makes progress instead of looking stuck.
+        _workingLabel = new TextBlock { FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center };
+        _workingLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        var workingDot = new Border { Width = 7, Height = 7, CornerRadius = new CornerRadius(4), Background = Accent, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+        var workingRow = new StackPanel { Orientation = Orientation.Horizontal };
+        workingRow.Children.Add(workingDot);
+        workingRow.Children.Add(_workingLabel);
+        _workingStrip = new Border
+        {
+            Child = workingRow,
+            Margin = new Thickness(0, 0, 0, 6),
+            Padding = new Thickness(10, 6, 10, 6),
+            CornerRadius = new CornerRadius(8),
+            Background = UserFill,
+            Visibility = Visibility.Collapsed,
+        };
+
+        _elapsedTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _elapsedTimer.Tick += (_, __) => UpdateWorkingStrip();
 
         // Streaming deltas arrive far faster than a full re-render can keep up, so they only mark the
         // reply dirty; this timer repaints it a few times a second. That keeps the UI responsive on a
@@ -419,6 +447,7 @@ internal sealed class AgentPanelControl : UserControl
         };
 
         var composer = new StackPanel { Margin = new Thickness(12, 6, 12, 12) };
+        composer.Children.Add(_workingStrip);
         composer.Children.Add(inputBorder);
         composer.Children.Add(statusBar);
         return composer;
@@ -579,6 +608,11 @@ internal sealed class AgentPanelControl : UserControl
                 {
                     _streamingText += e.Text;
                     _renderPending = true;
+                }
+                // The running token count feeds the working strip; the elapsed timer paints it.
+                if (e.OutputTokens.HasValue && e.OutputTokens.Value > _turnTokens)
+                {
+                    _turnTokens = e.OutputTokens.Value;
                 }
                 break;
 
@@ -933,8 +967,31 @@ internal sealed class AgentPanelControl : UserControl
     {
         _busy = busy;
         if (_primaryLabel != null) _primaryLabel.Text = Loc(busy ? "stop" : "send");
-        if (busy) { _status.Text = Loc("working"); }
-        else { _input.Focus(); }
+        if (busy)
+        {
+            _status.Text = Loc("working");
+            _turnStart = DateTime.UtcNow;
+            _turnTokens = 0;
+            _workingStrip.Visibility = Visibility.Visible;
+            UpdateWorkingStrip();
+            _elapsedTimer.Start();
+        }
+        else
+        {
+            _elapsedTimer.Stop();
+            _workingStrip.Visibility = Visibility.Collapsed;
+            _input.Focus();
+        }
+    }
+
+    // Refreshes the working strip: "Claude is working... 12s - 2.9k tokens".
+    private void UpdateWorkingStrip()
+    {
+        int secs = (int)(DateTime.UtcNow - _turnStart).TotalSeconds;
+        string tokens = _turnTokens >= 1000
+            ? string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}k", _turnTokens / 1000.0)
+            : _turnTokens.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _workingLabel.Text = string.Format("{0}  {1}s  ·  {2} {3}", Loc("working"), secs, tokens, Loc("tokens"));
     }
 
     // Stops the running turn by ending the CLI process - the plain CLI has no client-answerable

@@ -54,6 +54,9 @@ public sealed class CliEvent
     public bool IsError { get; set; }
     public string Raw { get; set; } = string.Empty;
 
+    /// <summary>Running output-token count from a streaming message_delta; null when the line carries none.</summary>
+    public int? OutputTokens { get; set; }
+
     /// <summary>The agent's to-do list when this assistant turn wrote one; null otherwise.</summary>
     public System.Collections.Generic.IReadOnlyList<TodoItem>? Todos { get; set; }
 
@@ -162,6 +165,7 @@ public static class CliStreamProtocol
                 {
                     Kind = CliEventKind.StreamDelta,
                     Text = DeltaText(obj["event"]),
+                    OutputTokens = (int?)obj["event"]?["usage"]?["output_tokens"],
                     Raw = line,
                 };
 
