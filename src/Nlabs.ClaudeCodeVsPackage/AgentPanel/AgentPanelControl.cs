@@ -118,7 +118,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["placeholder"] = "Ask Claude - Enter sends", ["model"] = "Model", ["permission"] = "Permission",
                 ["chat"] = "Chat", ["language"] = "Language", ["new"] = "New", ["delete"] = "Delete",
                 ["send"] = "Send", ["stop"] = "Stop", ["you"] = "You", ["assistant"] = "Claude",
-                ["defaultModel"] = "Default model", ["askEach"] = "Ask each time", ["acceptEdits"] = "Accept edits",
+                ["defaultModel"] = "Default model", ["askEach"] = "Ask each time", ["acceptEdits"] = "Accept edits", ["planMode"] = "Plan mode",
                 ["hello"] = "Type a message and press Enter.", ["working"] = "Claude is working...",
                 ["newChat"] = "New chat - type a message to begin.",
                 ["switched"] = "Switched - your next message resumes this chat.", ["tasks"] = "Tasks",
@@ -136,7 +136,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["placeholder"] = "Claude'a bir sey sor - Enter gonderir", ["model"] = "Model", ["permission"] = "Izin",
                 ["chat"] = "Sohbet", ["language"] = "Dil", ["new"] = "Yeni", ["delete"] = "Sil",
                 ["send"] = "Gonder", ["stop"] = "Durdur", ["you"] = "Sen", ["assistant"] = "Claude",
-                ["defaultModel"] = "Varsayilan model", ["askEach"] = "Her seferinde sor", ["acceptEdits"] = "Duzenlemeleri kabul et",
+                ["defaultModel"] = "Varsayilan model", ["askEach"] = "Her seferinde sor", ["acceptEdits"] = "Duzenlemeleri kabul et", ["planMode"] = "Plan modu",
                 ["hello"] = "Bir mesaj yaz, Enter'a bas.", ["working"] = "Claude calisiyor...",
                 ["newChat"] = "Yeni sohbet - baslamak icin bir mesaj yaz.",
                 ["switched"] = "Gecildi - sonraki mesajin bu sohbeti surdurur.", ["tasks"] = "Gorevler",
@@ -234,7 +234,7 @@ internal sealed class AgentPanelControl : UserControl
         // Tier aliases, not pinned versions - each resolves to the latest model of that tier, so the
         // list doesn't go stale as new releases land.
         _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Fable", "fable") });
-        _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits") });
+        _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits"), ("Plan mode", "plan") });
         _effortCombo = MakeCombo(new (string, string?)[]
         {
             ("Effort: default", null), ("Low", "low"), ("Medium", "medium"), ("High", "high"), ("xHigh", "xhigh"), ("Max", "max"),
@@ -243,6 +243,7 @@ internal sealed class AgentPanelControl : UserControl
         Bind(() => ((ComboBoxItem)_modelCombo.Items[0]).Content = Loc("defaultModel"));
         Bind(() => ((ComboBoxItem)_modeCombo.Items[0]).Content = Loc("askEach"));
         Bind(() => ((ComboBoxItem)_modeCombo.Items[1]).Content = Loc("acceptEdits"));
+        Bind(() => ((ComboBoxItem)_modeCombo.Items[2]).Content = Loc("planMode"));
         Bind(() => ((ComboBoxItem)_effortCombo.Items[0]).Content = Loc("defaultEffort"));
         _convCombo = new ComboBox
         {
