@@ -102,6 +102,7 @@ internal sealed class AgentPanelControl : UserControl
     private ClaudeCliSession? _session;
     private StackPanel? _streamingContainer;
     private StackPanel? _streamingColumn;
+    private TextBlock? _streamingTextBlock;
     private volatile string _streamingText = string.Empty;
     private volatile bool _renderPending;
     private bool _busy;
@@ -218,7 +219,7 @@ internal sealed class AgentPanelControl : UserControl
             if (!_renderPending) return;
             _renderPending = false;
             RenderStreaming();
-            ScrollToEnd();
+            ScrollToEndIfAtBottom();
         };
 
         // Build each section once - these add fields (input, status, combos) as children, so a second
@@ -473,10 +474,11 @@ internal sealed class AgentPanelControl : UserControl
             case CliEventKind.Result:
                 OnUi(() =>
                 {
-                    // Final repaint so the last tokens show, then stop streaming.
+                    // Turn done: render the full markdown once (code boxes and all), then stop.
                     _renderTimer.Stop();
                     _renderPending = false;
-                    RenderStreaming();
+                    if (_streamingContainer != null) RenderMarkdownInto(_streamingContainer, _streamingText);
+                    _streamingTextBlock = null;
                     if (_streamingText.Length > 0)
                     {
                         string finalText = _streamingText;
@@ -512,12 +514,17 @@ internal sealed class AgentPanelControl : UserControl
         AppendActions(column, () => text, isUser: true);
     }
 
-    // Claude's turn: a block container filled by the markdown renderer as text streams in. Copy is
-    // added when the turn finishes (the text is complete then).
+    // Claude's turn. While streaming, the text goes into one plain TextBlock (cheap to update on
+    // every delta); the full markdown render - code boxes and all - runs once when the turn ends.
     private StackPanel AddAssistantBubble()
     {
         var container = new StackPanel();
         _streamingColumn = AddMessageColumn(container, isUser: false);
+
+        var streaming = new TextBlock { TextWrapping = TextWrapping.Wrap, LineHeight = 18 };
+        streaming.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        container.Children.Add(streaming);
+        _streamingTextBlock = streaming;
         return container;
     }
 
@@ -622,12 +629,10 @@ internal sealed class AgentPanelControl : UserControl
         return link;
     }
 
-    // Re-renders the in-flight reply from the accumulated text. Cheap enough per delta for the reply
-    // sizes the panel sees; markdown parsing is pure and the block list is small.
+    // Cheap per-delta update: just set the streaming TextBlock's text, no tree rebuild.
     private void RenderStreaming()
     {
-        if (_streamingContainer == null) return;
-        RenderMarkdownInto(_streamingContainer, _streamingText);
+        if (_streamingTextBlock != null) _streamingTextBlock.Text = _streamingText;
     }
 
     // Turns parsed markdown blocks into WPF elements: code as a selectable monospace box, headings
@@ -774,6 +779,7 @@ internal sealed class AgentPanelControl : UserControl
         _session = null;
         _streamingContainer = null;
         _streamingColumn = null;
+        _streamingTextBlock = null;
         SetBusy(false);
         _status.Text = "Stopped - your next message starts a new session.";
     }
@@ -831,6 +837,13 @@ internal sealed class AgentPanelControl : UserControl
     }
 
     private void ScrollToEnd() => _scroller.ScrollToEnd();
+
+    // Auto-follow the stream only when the user is already at the bottom; if they scrolled up to read
+    // earlier text, don't yank them back down.
+    private void ScrollToEndIfAtBottom()
+    {
+        if (_scroller.VerticalOffset >= _scroller.ScrollableHeight - 48) _scroller.ScrollToEnd();
+    }
 
     // CLI events arrive on the pump thread; this marshals each update to the panel's own WPF
     // dispatcher. Dispatcher.Invoke is the right tool for a control's thread affinity - it is not a
@@ -911,6 +924,7 @@ internal sealed class AgentPanelControl : UserControl
         _session = null;
         _streamingContainer = null;
         _streamingColumn = null;
+        _streamingTextBlock = null;
 
         _current = c;
         _switching = true;
