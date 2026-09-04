@@ -55,7 +55,36 @@ internal sealed class AgentPanelControl : UserControl
     private readonly ComboBox _modelCombo;
     private readonly ComboBox _modeCombo;
     private readonly ComboBox _convCombo;
+    private readonly ComboBox _langCombo;
     private readonly Border _stopButton;
+
+    // UI strings by language; every visible label re-reads these when the language changes.
+    private static readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, string>> Strings =
+        new System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, string>>
+        {
+            ["en"] = new System.Collections.Generic.Dictionary<string, string>
+            {
+                ["placeholder"] = "Message Claude...", ["model"] = "Model", ["permission"] = "Permission",
+                ["chat"] = "Chat", ["language"] = "Language", ["new"] = "New", ["delete"] = "Delete",
+                ["send"] = "Send", ["stop"] = "Stop", ["you"] = "You", ["assistant"] = "Claude",
+                ["defaultModel"] = "Default model", ["askEach"] = "Ask each time", ["acceptEdits"] = "Accept edits",
+                ["hello"] = "Type a message and press Enter.", ["working"] = "Claude is working...",
+                ["newChat"] = "New chat - type a message to begin.",
+                ["switched"] = "Switched - your next message resumes this chat.",
+            },
+            ["tr"] = new System.Collections.Generic.Dictionary<string, string>
+            {
+                ["placeholder"] = "Claude'a yaz...", ["model"] = "Model", ["permission"] = "Izin",
+                ["chat"] = "Sohbet", ["language"] = "Dil", ["new"] = "Yeni", ["delete"] = "Sil",
+                ["send"] = "Gonder", ["stop"] = "Durdur", ["you"] = "Sen", ["assistant"] = "Claude",
+                ["defaultModel"] = "Varsayilan model", ["askEach"] = "Her seferinde sor", ["acceptEdits"] = "Duzenlemeleri kabul et",
+                ["hello"] = "Bir mesaj yaz, Enter'a bas.", ["working"] = "Claude calisiyor...",
+                ["newChat"] = "Yeni sohbet - baslamak icin bir mesaj yaz.",
+                ["switched"] = "Gecildi - sonraki mesajin bu sohbeti surdurur.",
+            },
+        };
+    private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
+    private string _lang = "en";
 
     private readonly System.Collections.Generic.Queue<string> _queue = new System.Collections.Generic.Queue<string>();
     private readonly System.Windows.Threading.DispatcherTimer _renderTimer;
@@ -84,7 +113,7 @@ internal sealed class AgentPanelControl : UserControl
             FontSize = 11,
             Opacity = 0.6,
             VerticalAlignment = VerticalAlignment.Center,
-            Text = "Type a message and press Enter.",
+            Text = Loc("hello"),
         };
         _status.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
@@ -105,13 +134,13 @@ internal sealed class AgentPanelControl : UserControl
 
         _placeholder = new TextBlock
         {
-            Text = "Message Claude...",
             Opacity = 0.45,
             IsHitTestVisible = false,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(2, 0, 0, 0),
         };
         _placeholder.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        Bind(() => _placeholder.Text = Loc("placeholder"));
 
         // Now that the placeholder exists, toggle it with the input's content.
         _input.TextChanged += (_, __) => _placeholder.Visibility =
@@ -119,6 +148,10 @@ internal sealed class AgentPanelControl : UserControl
 
         _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet") });
         _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits") });
+        // Localize the wording of the fixed entries (model names stay as-is).
+        Bind(() => ((ComboBoxItem)_modelCombo.Items[0]).Content = Loc("defaultModel"));
+        Bind(() => ((ComboBoxItem)_modeCombo.Items[0]).Content = Loc("askEach"));
+        Bind(() => ((ComboBoxItem)_modeCombo.Items[1]).Content = Loc("acceptEdits"));
         _convCombo = new ComboBox
         {
             MinWidth = 150,
@@ -128,7 +161,14 @@ internal sealed class AgentPanelControl : UserControl
         };
         _convCombo.SelectionChanged += OnConversationSelected;
         RegisterConversation(_current, select: true);
-        _stopButton = MakeGhostButton("Stop", () => _ = StopAsync());
+
+        _langCombo = new ComboBox { MinWidth = 90, FontSize = 12, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
+        _langCombo.Items.Add(new ComboBoxItem { Content = "English", Tag = "en" });
+        _langCombo.Items.Add(new ComboBoxItem { Content = "Turkce", Tag = "tr" });
+        _langCombo.SelectedIndex = 0;
+        _langCombo.SelectionChanged += (_, __) => OnLanguageChanged();
+
+        _stopButton = MakeGhostButton("stop", () => _ = StopAsync());
         _stopButton.Visibility = Visibility.Collapsed; // shown only while a turn is running
 
         // Streaming deltas arrive far faster than a full re-render can keep up, so they only mark the
@@ -215,24 +255,21 @@ internal sealed class AgentPanelControl : UserControl
             Orientation = Orientation.Horizontal,
             Margin = new Thickness(12, 8, 12, 0),
         };
-        row.Children.Add(LabelFor("Chat", _convCombo));
-        row.Children.Add(MakeGhostButton("New", NewConversation));
-        var del = MakeGhostButton("Delete", DeleteConversation);
+        row.Children.Add(LabelFor("chat", _convCombo));
+        row.Children.Add(MakeGhostButton("new", NewConversation));
+        var del = MakeGhostButton("delete", DeleteConversation);
         del.Margin = new Thickness(6, 0, 0, 0);
         row.Children.Add(del);
         return row;
     }
 
-    // Model and permission, kept visually quiet under the chat row.
+    // Model, permission and language. A WrapPanel lets them flow to a second line in a narrow panel.
     private UIElement BuildSettingsRow()
     {
-        var row = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(12, 6, 12, 2),
-        };
-        row.Children.Add(LabelFor("Model", _modelCombo));
-        row.Children.Add(LabelFor("Permission", _modeCombo));
+        var row = new WrapPanel { Margin = new Thickness(12, 6, 12, 2) };
+        row.Children.Add(LabelFor("model", _modelCombo));
+        row.Children.Add(LabelFor("permission", _modeCombo));
+        row.Children.Add(LabelFor("language", _langCombo));
         return row;
     }
 
@@ -248,7 +285,7 @@ internal sealed class AgentPanelControl : UserControl
         inputGrid.Children.Add(_input);
         inputGrid.Children.Add(_placeholder);
 
-        var send = MakeAccentButton("Send", () => _ = SendAsync());
+        var send = MakeAccentButton("send", () => _ = SendAsync());
         send.VerticalAlignment = VerticalAlignment.Bottom;
         DockPanel.SetDock(send, Dock.Right);
 
@@ -433,7 +470,7 @@ internal sealed class AgentPanelControl : UserControl
     {
         var label = new TextBlock
         {
-            Text = isUser ? "You" : "Claude",
+            Text = isUser ? Loc("you") : Loc("assistant"),
             FontSize = 10.5,
             Opacity = 0.5,
             Margin = new Thickness(4, 0, 4, 3),
@@ -597,7 +634,7 @@ internal sealed class AgentPanelControl : UserControl
     {
         _busy = busy;
         _stopButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-        if (busy) { _status.Text = "Claude is working..."; }
+        if (busy) { _status.Text = Loc("working"); }
         else { _input.Focus(); }
     }
 
@@ -716,9 +753,7 @@ internal sealed class AgentPanelControl : UserControl
 
         RebuildMessages();
         SetBusy(false);
-        _status.Text = c.CliSessionId == null
-            ? "New chat - type a message to begin."
-            : "Switched - your next message resumes this chat.";
+        _status.Text = c.CliSessionId == null ? Loc("newChat") : Loc("switched");
     }
 
     // Repaints the transcript of the current chat from its stored messages.
@@ -772,6 +807,23 @@ internal sealed class AgentPanelControl : UserControl
         }
     }
 
+    private string Loc(string key) =>
+        Strings.TryGetValue(_lang, out var map) && map.TryGetValue(key, out var s) ? s : key;
+
+    // Registers a text setter so a language switch can re-apply it, and applies it once now.
+    private void Bind(Action apply)
+    {
+        apply();
+        _localizers.Add(apply);
+    }
+
+    private void OnLanguageChanged()
+    {
+        _lang = (_langCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "en";
+        foreach (Action apply in _localizers) apply();
+        RebuildMessages(); // role labels are rebuilt with the new language
+    }
+
     private ComboBox MakeCombo((string label, string? value)[] options)
     {
         var combo = new ComboBox
@@ -789,18 +841,18 @@ internal sealed class AgentPanelControl : UserControl
         return combo;
     }
 
-    private static UIElement LabelFor(string text, UIElement control)
+    private UIElement LabelFor(string key, UIElement control)
     {
         var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 6, 0) };
         var label = new TextBlock
         {
-            Text = text,
             FontSize = 11,
             Opacity = 0.55,
             Margin = new Thickness(0, 0, 5, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
         label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        Bind(() => label.Text = Loc(key));
         panel.Children.Add(label);
         panel.Children.Add(control);
         return panel;
@@ -808,15 +860,15 @@ internal sealed class AgentPanelControl : UserControl
 
     // A filled accent button (Send). Built as a Border so it is fully rounded and branded, with a
     // hover tint and a hand cursor - a plain WPF Button cannot be themed this cleanly in code.
-    private Border MakeAccentButton(string text, Action onClick)
+    private Border MakeAccentButton(string key, Action onClick)
     {
         var label = new TextBlock
         {
-            Text = text,
             Foreground = OnAccent,
             FontWeight = FontWeights.SemiBold,
             FontSize = 12,
         };
+        Bind(() => label.Text = Loc(key));
         var button = new Border
         {
             Child = label,
@@ -834,10 +886,11 @@ internal sealed class AgentPanelControl : UserControl
     }
 
     // A quiet outlined button (New, Stop): themed border, no fill, hand cursor.
-    private Border MakeGhostButton(string text, Action onClick)
+    private Border MakeGhostButton(string key, Action onClick)
     {
-        var label = new TextBlock { Text = text, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        var label = new TextBlock { FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
         label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        Bind(() => label.Text = Loc(key));
         var button = new Border
         {
             Child = label,
