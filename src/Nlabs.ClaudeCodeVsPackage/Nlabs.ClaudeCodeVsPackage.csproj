@@ -60,12 +60,28 @@
     </None>
   </ItemGroup>
 
+  <!-- The command table. ResourceName MUST be "Menus.ctmenu" to match the package's
+       [ProvideMenuResource("Menus.ctmenu", 1)]. VSCTCompile compiles the .vsct into the
+       embedded .ctmenu resource; SDK globbing would otherwise treat it as plain None. -->
+  <ItemGroup>
+    <None Remove="VSCommandTable.vsct" />
+    <VSCTCompile Include="VSCommandTable.vsct">
+      <ResourceName>Menus.ctmenu</ResourceName>
+    </VSCTCompile>
+  </ItemGroup>
+
   <!-- The VS-independent bridge core; Bridge.dll is copied into the VSIX (Private=true). -->
   <ItemGroup>
     <ProjectReference Include="..\Nlabs.ClaudeCodeVsPackage.Bridge\Nlabs.ClaudeCodeVsPackage.Bridge.csproj">
       <Name>Nlabs.ClaudeCodeVsPackage.Bridge</Name>
       <Private>true</Private>
     </ProjectReference>
+  </ItemGroup>
+
+  <!-- MenuCommandService (base of OleMenuCommandService, provides AddCommand) lives in
+       System.Design.dll - a framework assembly the SDK does not reference by default. -->
+  <ItemGroup>
+    <Reference Include="System.Design" />
   </ItemGroup>
 
   <ItemGroup>

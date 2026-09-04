@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <!-- stdidcmd.h has the standard command ids; vsshlids.h has the VS menu/group ids
+       (we parent our group under the Tools menu, IDM_VS_MENU_TOOLS). -->
+  <Extern href="stdidcmd.h" />
+  <Extern href="vsshlids.h" />
+
+  <Commands package="guidNlabsPackage">
+
+    <!-- A group is a slot inside a menu. Ours lives on the Tools menu. -->
+    <Groups>
+      <Group guid="guidNlabsCmdSet" id="NlabsToolsGroup" priority="0x0600">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_TOOLS" />
+      </Group>
+    </Groups>
+
+    <!-- The actual clickable command, placed into our group. -->
+    <Buttons>
+      <Button guid="guidNlabsCmdSet" id="RestartBridgeCommandId" priority="0x0100" type="Button">
+        <Parent guid="guidNlabsCmdSet" id="NlabsToolsGroup" />
+        <Strings>
+          <ButtonText>Restart Local Bridge</ButtonText>
+        </Strings>
+      </Button>
+    </Buttons>
+
+  </Commands>
+
+  <Symbols>
+    <!-- Must match PackageGuidString on the package, or the command table is orphaned. -->
+    <GuidSymbol name="guidNlabsPackage" value="{952c382f-7793-44ac-beab-e4c14cd9470c}" />
+
+    <GuidSymbol name="guidNlabsCmdSet" value="{7f3a1c22-9b64-4d1e-8a5f-2c9e6d4b1a30}">
+      <IDSymbol name="NlabsToolsGroup" value="0x1020" />
+      <IDSymbol name="RestartBridgeCommandId" value="0x0100" />
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>
