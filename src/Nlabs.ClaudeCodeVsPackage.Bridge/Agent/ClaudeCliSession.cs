@@ -21,6 +21,9 @@ public sealed class ClaudeCliOptions
     public string? Resume { get; set; }
     /// <summary>Emit partial-message deltas so text streams as it is produced.</summary>
     public bool IncludePartialMessages { get; set; } = true;
+
+    /// <summary>Path to a settings JSON file (the permission floor), passed with --settings.</summary>
+    public string? SettingsPath { get; set; }
 }
 
 /// <summary>
@@ -104,6 +107,7 @@ public sealed class ClaudeCliSession : IDisposable
         if (!string.IsNullOrEmpty(options.PermissionMode)) sb.Append(" --permission-mode ").Append(options.PermissionMode);
         if (options.Continue) sb.Append(" --continue");
         if (!string.IsNullOrEmpty(options.Resume)) sb.Append(" --resume ").Append(options.Resume);
+        if (!string.IsNullOrEmpty(options.SettingsPath)) sb.Append(" --settings ").Append(Quote(options.SettingsPath!));
         if (!string.IsNullOrEmpty(options.AppendSystemPrompt))
         {
             sb.Append(" --append-system-prompt ").Append(Quote(options.AppendSystemPrompt!));
@@ -116,14 +120,31 @@ public sealed class ClaudeCliSession : IDisposable
     // argument parser. Used only for free-text options (the system prompt).
     private static string Quote(string value)
     {
+        // CommandLineToArgvW rules: a backslash is literal unless it precedes a quote, so only a
+        // run of backslashes that meets a quote (or the closing quote) is doubled. Doubling every
+        // backslash would corrupt Windows paths (C:\tmp -> C:\\tmp).
         var sb = new StringBuilder("\"");
+        int slashes = 0;
         foreach (char c in value)
         {
-            if (c == '"') sb.Append("\\\"");
-            else if (c == '\\') sb.Append("\\\\");
-            else if (c == '\n' || c == '\r') sb.Append(' ');
-            else sb.Append(c);
+            if (c == '\\')
+            {
+                slashes++;
+            }
+            else if (c == '"')
+            {
+                sb.Append('\\', slashes * 2 + 1);
+                sb.Append('"');
+                slashes = 0;
+            }
+            else
+            {
+                sb.Append('\\', slashes);
+                sb.Append(c == '\n' || c == '\r' ? ' ' : c);
+                slashes = 0;
+            }
         }
+        sb.Append('\\', slashes * 2);
         sb.Append('"');
         return sb.ToString();
     }

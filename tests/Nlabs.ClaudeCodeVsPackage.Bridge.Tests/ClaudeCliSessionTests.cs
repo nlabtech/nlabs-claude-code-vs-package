@@ -47,6 +47,14 @@ public class ClaudeCliSessionTests
     }
 
     [Fact]
+    public void BuildArguments_adds_the_settings_path()
+    {
+        string args = ClaudeCliSession.BuildArguments(new ClaudeCliOptions { SettingsPath = @"C:\tmp\s.json" });
+
+        Assert.Contains("--settings \"C:\\tmp\\s.json\"", args);
+    }
+
+    [Fact]
     public void Pump_raises_a_parsed_event_for_each_line()
     {
         var session = new ClaudeCliSession();

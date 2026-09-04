@@ -141,7 +141,9 @@ internal sealed class AgentPanelControl : UserControl
         _session = new ClaudeCliSession();
         _session.Event += OnCliEvent;
         _session.Exited += (_, __) => OnUi(() => _status.Text = "Session ended.");
-        _session.Start(SolutionDirectory(), CurrentOptions());
+        ClaudeCliOptions options = CurrentOptions();
+        options.SettingsPath = WriteSafetySettings();
+        _session.Start(SolutionDirectory(), options);
         _status.Text = "Connected.";
     }
 
@@ -239,6 +241,24 @@ internal sealed class AgentPanelControl : UserControl
         _streamingReply = null;
         _messages.Children.Clear();
         _status.Text = "New session - the model and permission apply on your next message.";
+    }
+
+    // Writes the always-on permission floor (deny destructive shell + secret reads) to a temp
+    // settings file that the session passes with --settings. If it cannot be written, the session
+    // still starts - just without the extra floor - rather than blocking the developer.
+    private static string? WriteSafetySettings()
+    {
+        try
+        {
+            string path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(), "nlabs_claude_settings_" + Guid.NewGuid().ToString("n") + ".json");
+            System.IO.File.WriteAllText(path, PermissionPolicy.BuildSettingsJson());
+            return path;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private ComboBox MakeCombo((string label, string? value)[] options)
