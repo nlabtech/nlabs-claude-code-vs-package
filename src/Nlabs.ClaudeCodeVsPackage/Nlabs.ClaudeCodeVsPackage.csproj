@@ -17,10 +17,20 @@
     <RootNamespace>Nlabs.ClaudeCodeVsPackage</RootNamespace>
     <AssemblyName>Nlabs.ClaudeCodeVsPackage</AssemblyName>
 
-    <!-- The release version is tracked by the manifest; AssemblyVersion stays FIXED. -->
+    <!--
+      Version identity, deliberately split:
+
+      AssemblyVersion is FIXED at 1.0.0.0 and must NOT change between releases. Visual
+      Studio's MEF component cache and assembly binding key on the strong name (which
+      includes AssemblyVersion). Bump it every build and VS keeps rebuilding the MEF
+      cache and old binding redirects break - the extension "randomly" stops loading.
+
+      Version/FileVersion DO move with each release (this is what the manifest and the
+      file properties show), so you still get a real, human-meaningful version number.
+    -->
     <Version>0.1.0</Version>
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
-    <FileVersion>0.1.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>$(Version).0</FileVersion>
   </PropertyGroup>
 
   <!-- VSIX container: generate pkgdef, put the output assembly in the package, no symbols.
