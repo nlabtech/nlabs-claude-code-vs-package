@@ -19,16 +19,6 @@ public class CliStreamProtocolTests
     }
 
     [Fact]
-    public void ControlInterrupt_is_an_interrupt_control_request()
-    {
-        var m = JObject.Parse(CliStreamProtocol.ControlInterrupt("req-1"));
-
-        Assert.Equal("control_request", (string?)m["type"]);
-        Assert.Equal("req-1", (string?)m["request_id"]);
-        Assert.Equal("interrupt", (string?)m["request"]!["subtype"]);
-    }
-
-    [Fact]
     public void Parse_system_init_reads_model_and_session()
     {
         var e = CliStreamProtocol.Parse(

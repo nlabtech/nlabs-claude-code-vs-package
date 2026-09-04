@@ -174,9 +174,17 @@ internal sealed class AgentPanelControl : UserControl
         ThreadHelper.ThrowIfNotOnUIThread();
         if (_session != null) return;
 
-        _session = new ClaudeCliSession();
-        _session.Event += OnCliEvent;
-        _session.Exited += (_, __) => OnUi(() => { SetBusy(false); _status.Text = "Session ended."; });
+        var session = new ClaudeCliSession();
+        session.Event += OnCliEvent;
+        // Only react to an exit if this is still the live session - a manual Stop nulls the field
+        // first, and its own kill must not clobber the "Stopped" status.
+        session.Exited += (_, __) => OnUi(() =>
+        {
+            if (!ReferenceEquals(_session, session)) return;
+            SetBusy(false);
+            _status.Text = "Session ended.";
+        });
+        _session = session;
         ClaudeCliOptions options = CurrentOptions();
         options.SettingsPath = WriteSafetySettings();
         _session.Start(SolutionDirectory(), options);
@@ -391,17 +399,20 @@ internal sealed class AgentPanelControl : UserControl
         else { _input.Focus(); }
     }
 
-    // Asks the running turn to stop. Queued messages are dropped (a manual stop means "stop", not
-    // "run the next one"); the session stays alive so the conversation can continue with a new
-    // message. The CLI ends the turn with a result event, which returns the panel to idle.
+    // Stops the running turn by ending the CLI process - the plain CLI has no client-answerable
+    // interrupt channel, so a kill is the reliable stop. Queued messages are dropped (a manual stop
+    // means "stop", not "run the next one"), and the next message opens a fresh session. Whatever
+    // text already streamed stays on screen.
     private async System.Threading.Tasks.Task StopAsync()
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-        if (!_busy || _session == null) return;
+        if (!_busy) return;
         _queue.Clear();
-        _status.Text = "Stopping...";
-        try { await _session.InterruptAsync(); }
-        catch { /* the session is already gone; the idle transition still happens below */ }
+        _session?.Cancel();
+        _session = null;
+        _streamingContainer = null;
+        SetBusy(false);
+        _status.Text = "Stopped - your next message starts a new session.";
     }
 
     // After a turn ends, send the next queued message (if any) as its own turn. Called from the UI
