@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using EnvDTE;
@@ -8,15 +9,26 @@ using Microsoft.VisualStudio.Threading;
 using Newtonsoft.Json.Linq;
 using Nlabs.ClaudeCodeVsPackage.Bridge;
 
+// Every handler below is reached only through HandleAsync, which switches to the main thread
+// before dispatching, so all DTE access here is on the UI thread. The threading analyzer
+// cannot follow that guarantee across the await into the handler methods, so its UI-thread
+// warnings are suppressed for this file; the invariant is enforced at the single entry point.
+#pragma warning disable VSTHRD010
+
 namespace Nlabs.ClaudeCodeVsPackage
 {
     /// <summary>
-    /// Turns raw bridge messages into Visual Studio actions and sends replies back.
+    /// Turns bridge messages into Visual Studio actions and sends replies back.
     ///
-    /// This is the piece that makes the separate parts one working extension: it owns the
-    /// server's MessageReceived event, parses the JSON envelope { id, type, payload },
-    /// dispatches to a handler on the UI thread, and answers with { id, ok, result|error }.
-    /// The agent (Claude Code) speaks this small protocol over the local WebSocket.
+    /// This is the piece that makes the parts one working extension: it owns the server's
+    /// MessageReceived event, parses the { id, type, payload } envelope, dispatches to a
+    /// handler on the UI thread, and answers { id, ok, result|error }.
+    ///
+    /// Tool/message names mirror Claude Code's built-in IDE tools (openDiff, getDiagnostics,
+    /// getCurrentSelection, openFile, getOpenEditors, getWorkspaceFolders...) so the model
+    /// treats them as familiar. Build and debugger control go BEYOND the built-in set - that
+    /// is Visual Studio's edge. Every mutation follows the single-writer rule: the agent
+    /// proposes, VS applies; the MCP process never writes to disk itself.
     /// </summary>
     internal sealed class BridgeRouter
     {
@@ -39,8 +51,6 @@ namespace Nlabs.ClaudeCodeVsPackage
 
         private void OnMessage(object? sender, string json)
         {
-            // MessageReceived fires on a background thread; hop through the JTF so handlers
-            // can touch VS on the UI thread. Exceptions are turned into an error reply.
             _ = _jtf.RunAsync(async () =>
             {
                 string reply;
@@ -73,81 +83,166 @@ namespace Nlabs.ClaudeCodeVsPackage
             string? type = (string?)message["type"];
             var payload = message["payload"] as JObject ?? new JObject();
 
+            // Everything below touches DTE, which lives on the UI thread.
+            await _jtf.SwitchToMainThreadAsync();
+            var dte = await _services.GetServiceAsync(typeof(DTE)) as DTE2;
+            if (dte == null)
+            {
+                return Error(id, "DTE unavailable");
+            }
+
             switch (type)
             {
-                case "ping":
-                    return Ok(id, new JObject { ["pong"] = true });
-                case "get_active_document":
-                    return await GetActiveDocumentAsync(id);
-                case "get_diagnostics":
-                    return await GetDiagnosticsAsync(id);
-                case "get_debug_state":
-                    return await GetDebugStateAsync(id);
-                case "propose_diff":
-                    return await ProposeDiffAsync(id, payload);
-                default:
-                    return Error(id, "unknown message type: " + (type ?? "<null>"));
+                case "ping": return Ok(id, new JObject { ["pong"] = true });
+
+                // --- read-only context ---
+                case "getDiagnostics": return GetDiagnostics(id, dte, (string?)payload["path"]);
+                case "getCurrentSelection": return GetCurrentSelection(id, dte);
+                case "getOpenEditors": return GetOpenEditors(id, dte);
+                case "getWorkspaceFolders": return GetWorkspaceFolders(id, dte);
+                case "readFile": return ReadFile(id, (string?)payload["path"]);
+                case "checkDocumentDirty": return CheckDocumentDirty(id, dte, (string?)payload["path"]);
+                case "getDebugState": return GetDebugState(id, dte);
+
+                // --- navigation / editor state ---
+                case "openFile": return OpenFile(id, dte, (string?)payload["path"], (int?)payload["line"]);
+                case "saveDocument": return SaveDocument(id, dte, (string?)payload["path"]);
+                case "closeTab": return CloseTab(id, dte, (string?)payload["path"]);
+                case "formatDocument": return FormatDocument(id, dte, (string?)payload["path"]);
+
+                // --- single-writer mutation ---
+                case "openDiff": return await OpenDiffAsync(id, (string?)payload["file"], (string?)payload["proposedText"]);
+
+                // --- build (beyond the built-in set) ---
+                case "buildSolution": return BuildSolution(id, dte);
+
+                // --- debugger control (Visual Studio's edge) ---
+                case "addBreakpoint": return AddBreakpoint(id, dte, (string?)payload["file"], (int?)payload["line"]);
+                case "debugControl": return DebugControl(id, dte, (string?)payload["action"]);
+
+                default: return Error(id, "unknown message type: " + (type ?? "<null>"));
             }
         }
 
-        private async Task<string> GetActiveDocumentAsync(string? id)
-        {
-            await _jtf.SwitchToMainThreadAsync();
+        // --- read-only ---
 
-            var dte = await _services.GetServiceAsync(typeof(DTE)) as DTE;
-            var doc = dte?.ActiveDocument;
-            if (doc == null)
+        private string GetDiagnostics(string? id, DTE2 dte, string? path)
+        {
+            var items = dte.ToolWindows.ErrorList.ErrorItems;
+            var diagnostics = new JArray();
+            for (int i = 1; i <= items.Count; i++)
             {
-                return Error(id, "no active document");
+                ErrorItem item = items.Item(i);
+                if (!string.IsNullOrEmpty(path) &&
+                    !string.Equals(item.FileName, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                diagnostics.Add(new JObject
+                {
+                    ["file"] = item.FileName,
+                    ["line"] = item.Line,
+                    ["column"] = item.Column,
+                    ["description"] = item.Description,
+                    ["level"] = (int)item.ErrorLevel,
+                });
             }
+
+            return Ok(id, new JObject { ["diagnostics"] = diagnostics });
+        }
+
+        private string GetCurrentSelection(string? id, DTE2 dte)
+        {
+            var doc = dte.ActiveDocument;
+            if (doc == null) return Error(id, "no active document");
 
             var result = new JObject { ["path"] = doc.FullName };
             if (doc.Selection is TextSelection selection)
             {
                 result["selectedText"] = selection.Text;
                 result["line"] = selection.CurrentLine;
+                result["column"] = selection.CurrentColumn;
             }
 
             return Ok(id, result);
         }
 
-        private async Task<string> GetDiagnosticsAsync(string? id)
+        private string GetOpenEditors(string? id, DTE2 dte)
         {
-            await _jtf.SwitchToMainThreadAsync();
-
-            var dte = await _services.GetServiceAsync(typeof(DTE)) as DTE2;
-            var items = dte?.ToolWindows.ErrorList.ErrorItems;
-
-            var diagnostics = new JArray();
-            if (items != null)
+            var editors = new JArray();
+            foreach (Document doc in dte.Documents)
             {
-                for (int i = 1; i <= items.Count; i++)
+                editors.Add(new JObject
                 {
-                    ErrorItem item = items.Item(i);
-                    diagnostics.Add(new JObject
+                    ["path"] = doc.FullName,
+                    ["saved"] = doc.Saved,
+                });
+            }
+
+            return Ok(id, new JObject { ["openEditors"] = editors });
+        }
+
+        private string GetWorkspaceFolders(string? id, DTE2 dte)
+        {
+            var folders = new JArray();
+            Solution? solution = dte.Solution;
+            if (solution != null)
+            {
+                foreach (Project project in solution.Projects)
+                {
+                    try
                     {
-                        ["file"] = item.FileName,
-                        ["line"] = item.Line,
-                        ["description"] = item.Description,
-                        ["level"] = (int)item.ErrorLevel,
-                    });
+                        if (!string.IsNullOrEmpty(project.FullName))
+                        {
+                            folders.Add(Path.GetDirectoryName(project.FullName));
+                        }
+                    }
+                    catch
+                    {
+                        // solution folders have no FullName; skip
+                    }
                 }
             }
 
-            return Ok(id, new JObject { ["diagnostics"] = diagnostics });
+            return Ok(id, new JObject
+            {
+                ["solution"] = solution?.FullName,
+                ["folders"] = folders,
+            });
         }
 
-        private async Task<string> GetDebugStateAsync(string? id)
+        private string ReadFile(string? id, string? path)
         {
-            await _jtf.SwitchToMainThreadAsync();
+            if (string.IsNullOrEmpty(path)) return Error(id, "path is required");
+            if (!File.Exists(path)) return Error(id, "file not found");
 
-            var dte = await _services.GetServiceAsync(typeof(DTE)) as DTE;
-            Debugger? debugger = dte?.Debugger;
+            return Ok(id, new JObject
+            {
+                ["path"] = path,
+                ["content"] = File.ReadAllText(path),
+            });
+        }
 
+        private string CheckDocumentDirty(string? id, DTE2 dte, string? path)
+        {
+            Document? doc = FindDocument(dte, path) ?? dte.ActiveDocument;
+            if (doc == null) return Error(id, "no matching document");
+
+            return Ok(id, new JObject
+            {
+                ["path"] = doc.FullName,
+                ["dirty"] = !doc.Saved,
+            });
+        }
+
+        private string GetDebugState(string? id, DTE2 dte)
+        {
+            Debugger debugger = dte.Debugger;
             bool inBreak = debugger != null && debugger.CurrentMode == dbgDebugMode.dbgBreakMode;
             var result = new JObject { ["inBreakMode"] = inBreak };
 
-            // The execution context comes from the debugger's stack frame - never the caret.
+            // Execution context comes from the debugger's stack frame, never the caret.
             if (inBreak && debugger!.CurrentStackFrame != null)
             {
                 result["function"] = debugger.CurrentStackFrame.FunctionName;
@@ -156,38 +251,126 @@ namespace Nlabs.ClaudeCodeVsPackage
             return Ok(id, result);
         }
 
-        private async Task<string> ProposeDiffAsync(string? id, JObject payload)
-        {
-            string? file = (string?)payload["file"];
-            string? proposedText = (string?)payload["proposedText"];
+        // --- navigation / editor state ---
 
-            if (string.IsNullOrEmpty(file))
+        private string OpenFile(string? id, DTE2 dte, string? path, int? line)
+        {
+            if (string.IsNullOrEmpty(path)) return Error(id, "path is required");
+
+            dte.ItemOperations.OpenFile(path, EnvDTE.Constants.vsViewKindTextView);
+            if (line.HasValue && dte.ActiveDocument?.Selection is TextSelection selection)
             {
-                return Error(id, "file is required");
+                selection.GotoLine(line.Value, Select: false);
             }
+
+            return Ok(id, new JObject { ["opened"] = path });
+        }
+
+        private string SaveDocument(string? id, DTE2 dte, string? path)
+        {
+            Document? doc = FindDocument(dte, path) ?? dte.ActiveDocument;
+            if (doc == null) return Error(id, "no matching document");
+
+            doc.Save();
+            return Ok(id, new JObject { ["saved"] = doc.FullName });
+        }
+
+        private string CloseTab(string? id, DTE2 dte, string? path)
+        {
+            Document? doc = FindDocument(dte, path);
+            if (doc == null) return Error(id, "no matching document");
+
+            doc.Close(vsSaveChanges.vsSaveChangesPrompt);
+            return Ok(id, new JObject { ["closed"] = path });
+        }
+
+        private string FormatDocument(string? id, DTE2 dte, string? path)
+        {
+            if (!string.IsNullOrEmpty(path))
+            {
+                dte.ItemOperations.OpenFile(path, EnvDTE.Constants.vsViewKindTextView);
+            }
+
+            dte.ExecuteCommand("Edit.FormatDocument");
+            return Ok(id, new JObject { ["formatted"] = true });
+        }
+
+        // --- single-writer mutation ---
+
+        private async Task<string> OpenDiffAsync(string? id, string? file, string? proposedText)
+        {
+            if (string.IsNullOrEmpty(file)) return Error(id, "file is required");
 
             await _diff.ShowAsync(file!, proposedText ?? string.Empty, CancellationToken.None);
             return Ok(id, new JObject { ["shown"] = true });
         }
 
+        // --- build ---
+
+        private string BuildSolution(string? id, DTE2 dte)
+        {
+            SolutionBuild build = dte.Solution.SolutionBuild;
+            build.Build(WaitForBuildToFinish: true);
+
+            return Ok(id, new JObject
+            {
+                ["failedProjects"] = build.LastBuildInfo, // 0 == success
+                ["succeeded"] = build.LastBuildInfo == 0,
+            });
+        }
+
+        // --- debugger ---
+
+        private string AddBreakpoint(string? id, DTE2 dte, string? file, int? line)
+        {
+            if (string.IsNullOrEmpty(file) || !line.HasValue) return Error(id, "file and line are required");
+
+            dte.Debugger.Breakpoints.Add(File: file, Line: line.Value);
+            return Ok(id, new JObject { ["breakpoint"] = new JObject { ["file"] = file, ["line"] = line.Value } });
+        }
+
+        private string DebugControl(string? id, DTE2 dte, string? action)
+        {
+            Debugger debugger = dte.Debugger;
+            switch (action)
+            {
+                case "continue": debugger.Go(WaitForBreakOrEnd: false); break;
+                case "stepOver": debugger.StepOver(WaitForBreakOrEnd: false); break;
+                case "stepInto": debugger.StepInto(WaitForBreakOrEnd: false); break;
+                case "stepOut": debugger.StepOut(WaitForBreakOrEnd: false); break;
+                case "break": debugger.Break(WaitForBreakMode: false); break;
+                case "stop": debugger.Stop(WaitForDesignMode: false); break;
+                default: return Error(id, "unknown debug action: " + (action ?? "<null>"));
+            }
+
+            return Ok(id, new JObject { ["action"] = action });
+        }
+
+        // --- helpers ---
+
+        private static Document? FindDocument(DTE2 dte, string? path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            foreach (Document doc in dte.Documents)
+            {
+                if (string.Equals(doc.FullName, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    return doc;
+                }
+            }
+            return null;
+        }
+
         private static string Ok(string? id, JObject result)
         {
-            return new JObject
-            {
-                ["id"] = id,
-                ["ok"] = true,
-                ["result"] = result,
-            }.ToString(Newtonsoft.Json.Formatting.None);
+            return new JObject { ["id"] = id, ["ok"] = true, ["result"] = result }
+                .ToString(Newtonsoft.Json.Formatting.None);
         }
 
         private static string Error(string? id, string message)
         {
-            return new JObject
-            {
-                ["id"] = id,
-                ["ok"] = false,
-                ["error"] = message,
-            }.ToString(Newtonsoft.Json.Formatting.None);
+            return new JObject { ["id"] = id, ["ok"] = false, ["error"] = message }
+                .ToString(Newtonsoft.Json.Formatting.None);
         }
     }
 }
