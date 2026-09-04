@@ -16,7 +16,7 @@ internal sealed class AgentPanelToolWindow : ToolWindowPane
 
     public AgentPanelToolWindow() : base(null)
     {
-        Caption = "Claude Code";
+        Caption = "Claude Code (nLabtech)";
         _control = new AgentPanelControl();
         Content = _control;
     }

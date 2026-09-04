@@ -8,36 +8,51 @@
 
   <Commands package="guidNlabsPackage">
 
-    <!-- A group is a slot inside a menu. One lives on the Tools menu, one on the editor
-         right-click menu so "Send Selection to Claude Code" is where the developer's caret is. -->
+    <!-- Our own named submenu on the Tools menu, so the commands are grouped under a distinct
+         label ("Claude Code (nLabtech)") instead of loose among unrelated Tools entries. -->
+    <Menus>
+      <Menu guid="guidNlabsCmdSet" id="NlabsSubMenu" priority="0x0600" type="Menu">
+        <Parent guid="guidNlabsCmdSet" id="NlabsToolsGroup" />
+        <Strings>
+          <ButtonText>Claude Code (nLabtech)</ButtonText>
+        </Strings>
+      </Menu>
+    </Menus>
+
     <Groups>
+      <!-- Slot on the Tools menu that hosts our submenu. -->
       <Group guid="guidNlabsCmdSet" id="NlabsToolsGroup" priority="0x0600">
         <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_TOOLS" />
       </Group>
+      <!-- The commands live inside the submenu. -->
+      <Group guid="guidNlabsCmdSet" id="NlabsSubMenuGroup" priority="0x0100">
+        <Parent guid="guidNlabsCmdSet" id="NlabsSubMenu" />
+      </Group>
+      <!-- Editor right-click slot for "Send Selection to Claude Code". -->
       <Group guid="guidNlabsCmdSet" id="NlabsEditorGroup" priority="0x0600">
         <Parent guid="guidSHLMainMenu" id="IDM_VS_CTXT_CODEWIN" />
       </Group>
     </Groups>
 
     <Buttons>
-      <Button guid="guidNlabsCmdSet" id="RestartBridgeCommandId" priority="0x0100" type="Button">
-        <Parent guid="guidNlabsCmdSet" id="NlabsToolsGroup" />
+      <Button guid="guidNlabsCmdSet" id="OpenPanelCommandId" priority="0x0100" type="Button">
+        <Parent guid="guidNlabsCmdSet" id="NlabsSubMenuGroup" />
         <Strings>
-          <ButtonText>Restart Local Bridge</ButtonText>
+          <ButtonText>Open Claude Panel</ButtonText>
         </Strings>
       </Button>
 
       <Button guid="guidNlabsCmdSet" id="SendSelectionCommandId" priority="0x0101" type="Button">
-        <Parent guid="guidNlabsCmdSet" id="NlabsToolsGroup" />
+        <Parent guid="guidNlabsCmdSet" id="NlabsSubMenuGroup" />
         <Strings>
           <ButtonText>Send Selection to Claude Code</ButtonText>
         </Strings>
       </Button>
 
-      <Button guid="guidNlabsCmdSet" id="OpenPanelCommandId" priority="0x0102" type="Button">
-        <Parent guid="guidNlabsCmdSet" id="NlabsToolsGroup" />
+      <Button guid="guidNlabsCmdSet" id="RestartBridgeCommandId" priority="0x0102" type="Button">
+        <Parent guid="guidNlabsCmdSet" id="NlabsSubMenuGroup" />
         <Strings>
-          <ButtonText>Open Claude Panel</ButtonText>
+          <ButtonText>Restart Local Bridge</ButtonText>
         </Strings>
       </Button>
     </Buttons>
@@ -58,6 +73,8 @@
     <GuidSymbol name="guidNlabsCmdSet" value="{7f3a1c22-9b64-4d1e-8a5f-2c9e6d4b1a30}">
       <IDSymbol name="NlabsToolsGroup" value="0x1020" />
       <IDSymbol name="NlabsEditorGroup" value="0x1030" />
+      <IDSymbol name="NlabsSubMenu" value="0x1040" />
+      <IDSymbol name="NlabsSubMenuGroup" value="0x1050" />
       <IDSymbol name="RestartBridgeCommandId" value="0x0100" />
       <IDSymbol name="SendSelectionCommandId" value="0x0101" />
       <IDSymbol name="OpenPanelCommandId" value="0x0102" />

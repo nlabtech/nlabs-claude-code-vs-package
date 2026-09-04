@@ -49,7 +49,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             Margin = new Thickness(10, 4, 10, 4),
             Opacity = 0.7,
-            Text = "Claude Code - type a message and press Enter.",
+            Text = "Claude Code (nLabtech) - type a message and press Enter.",
         };
         _status.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
