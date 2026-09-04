@@ -88,6 +88,7 @@ internal sealed class AgentPanelControl : UserControl
     private readonly TextBlock _status;
     private readonly ComboBox _modelCombo;
     private readonly ComboBox _modeCombo;
+    private readonly ComboBox _effortCombo;
     private readonly ComboBox _convCombo;
     private readonly ComboBox _langCombo;
     private readonly ComboBox _accentCombo;
@@ -113,7 +114,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["allow"] = "Allow", ["deny"] = "Deny", ["always"] = "Always allow",
                 ["wantsToRun"] = "wants to run", ["allowed"] = "Allowed", ["denied"] = "Denied",
                 ["edit"] = "Edit", ["accent"] = "Accent", ["attachHint"] = "Attach an image",
-                ["tokens"] = "tokens",
+                ["tokens"] = "tokens", ["defaultEffort"] = "Effort: default",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -128,7 +129,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["allow"] = "Izin ver", ["deny"] = "Reddet", ["always"] = "Hep izin ver",
                 ["wantsToRun"] = "calistirmak istiyor", ["allowed"] = "Izin verildi", ["denied"] = "Reddedildi",
                 ["edit"] = "Duzenle", ["accent"] = "Vurgu", ["attachHint"] = "Gorsel ekle",
-                ["tokens"] = "token",
+                ["tokens"] = "token", ["defaultEffort"] = "Efor: varsayilan",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -214,10 +215,15 @@ internal sealed class AgentPanelControl : UserControl
         // list doesn't go stale as new releases land.
         _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Fable", "fable") });
         _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits") });
-        // Localize the wording of the fixed entries (model names stay as-is).
+        _effortCombo = MakeCombo(new (string, string?)[]
+        {
+            ("Effort: default", null), ("Low", "low"), ("Medium", "medium"), ("High", "high"), ("xHigh", "xhigh"), ("Max", "max"),
+        });
+        // Localize the wording of the fixed entries (model, level and mode names stay as-is).
         Bind(() => ((ComboBoxItem)_modelCombo.Items[0]).Content = Loc("defaultModel"));
         Bind(() => ((ComboBoxItem)_modeCombo.Items[0]).Content = Loc("askEach"));
         Bind(() => ((ComboBoxItem)_modeCombo.Items[1]).Content = Loc("acceptEdits"));
+        Bind(() => ((ComboBoxItem)_effortCombo.Items[0]).Content = Loc("defaultEffort"));
         _convCombo = new ComboBox
         {
             MinWidth = 150,
@@ -409,8 +415,10 @@ internal sealed class AgentPanelControl : UserControl
         var rightTools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         _modelCombo.Margin = new Thickness(0, 0, 6, 0);
         _modeCombo.Margin = new Thickness(0, 0, 6, 0);
+        _effortCombo.Margin = new Thickness(0, 0, 6, 0);
         rightTools.Children.Add(_modelCombo);
         rightTools.Children.Add(_modeCombo);
+        rightTools.Children.Add(_effortCombo);
         rightTools.Children.Add(BuildPrimaryButton());
 
         var toolbar = new DockPanel { LastChildFill = false };
@@ -1088,6 +1096,7 @@ internal sealed class AgentPanelControl : UserControl
     {
         Model = (_modelCombo.SelectedItem as ComboBoxItem)?.Tag as string,
         PermissionMode = (_modeCombo.SelectedItem as ComboBoxItem)?.Tag as string,
+        Effort = (_effortCombo.SelectedItem as ComboBoxItem)?.Tag as string,
     };
 
     // Starts a fresh chat and switches to it.

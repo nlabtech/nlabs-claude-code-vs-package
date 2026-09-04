@@ -13,6 +13,8 @@ public sealed class ClaudeCliOptions
     public string? Model { get; set; }
     /// <summary>Permission mode, e.g. "acceptEdits". Null keeps the CLI default.</summary>
     public string? PermissionMode { get; set; }
+    /// <summary>Effort level: low | medium | high | xhigh | max. Null keeps the CLI default.</summary>
+    public string? Effort { get; set; }
     /// <summary>Extra system-prompt text appended to Claude's own.</summary>
     public string? AppendSystemPrompt { get; set; }
     /// <summary>Continue the most recent session in this directory.</summary>
@@ -209,6 +211,7 @@ public sealed class ClaudeCliSession : IDisposable
         if (options.IncludePartialMessages) sb.Append(" --include-partial-messages");
         if (!string.IsNullOrEmpty(options.Model)) sb.Append(" --model ").Append(options.Model);
         if (!string.IsNullOrEmpty(options.PermissionMode)) sb.Append(" --permission-mode ").Append(options.PermissionMode);
+        if (!string.IsNullOrEmpty(options.Effort)) sb.Append(" --effort ").Append(options.Effort);
         if (options.Continue) sb.Append(" --continue");
         if (!string.IsNullOrEmpty(options.Resume)) sb.Append(" --resume ").Append(options.Resume);
         if (!string.IsNullOrEmpty(options.SettingsPath)) sb.Append(" --settings ").Append(Quote(options.SettingsPath!));

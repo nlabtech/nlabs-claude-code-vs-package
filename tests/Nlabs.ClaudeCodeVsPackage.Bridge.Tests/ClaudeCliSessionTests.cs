@@ -36,6 +36,13 @@ public class ClaudeCliSessionTests
     }
 
     [Fact]
+    public void BuildArguments_adds_effort_when_set()
+    {
+        string args = ClaudeCliSession.BuildArguments(new ClaudeCliOptions { Effort = "high" });
+        Assert.Contains("--effort high", args);
+    }
+
+    [Fact]
     public void BuildArguments_quotes_the_appended_system_prompt()
     {
         string args = ClaudeCliSession.BuildArguments(new ClaudeCliOptions
