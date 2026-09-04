@@ -37,6 +37,16 @@ internal sealed class AgentPanelControl : UserControl
     private static readonly Brush AssistantFill = Frozen(Color.FromArgb(0x16, 0x9A, 0xA6, 0xC8));
     private static readonly FontFamily MonoFont = new FontFamily("Consolas, Cascadia Mono, Courier New");
 
+    // One chat thread: its stored messages plus the CLI session id used to resume it.
+    private sealed class Conversation
+    {
+        public string Title = "New chat";
+        public string? CliSessionId; // captured from system/init; drives --resume
+        public readonly System.Collections.Generic.List<(bool IsUser, string Text)> Messages
+            = new System.Collections.Generic.List<(bool, string)>();
+        public ComboBoxItem? Item; // its entry in the switcher, so the title can be refreshed
+    }
+
     private readonly StackPanel _messages;
     private readonly ScrollViewer _scroller;
     private readonly TextBox _input;
@@ -44,15 +54,18 @@ internal sealed class AgentPanelControl : UserControl
     private readonly TextBlock _status;
     private readonly ComboBox _modelCombo;
     private readonly ComboBox _modeCombo;
+    private readonly ComboBox _convCombo;
     private readonly Border _stopButton;
 
     private readonly System.Collections.Generic.Queue<string> _queue = new System.Collections.Generic.Queue<string>();
     private readonly System.Windows.Threading.DispatcherTimer _renderTimer;
+    private Conversation _current = new Conversation();
     private ClaudeCliSession? _session;
     private StackPanel? _streamingContainer;
     private volatile string _streamingText = string.Empty;
     private volatile bool _renderPending;
     private bool _busy;
+    private bool _switching; // guards the conversation combo while we rebuild it
 
     public AgentPanelControl()
     {
@@ -106,6 +119,15 @@ internal sealed class AgentPanelControl : UserControl
 
         _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet") });
         _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits") });
+        _convCombo = new ComboBox
+        {
+            MinWidth = 150,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _convCombo.SelectionChanged += OnConversationSelected;
+        RegisterConversation(_current, select: true);
         _stopButton = MakeGhostButton("Stop", () => _ = StopAsync());
         _stopButton.Visibility = Visibility.Collapsed; // shown only while a turn is running
 
@@ -127,14 +149,17 @@ internal sealed class AgentPanelControl : UserControl
         // Build each section once - these add fields (input, status, combos) as children, so a second
         // call would try to re-parent the same element and throw.
         UIElement header = BuildHeader();
+        UIElement chatRow = BuildChatRow();
         UIElement settingsRow = BuildSettingsRow();
         UIElement composer = BuildComposer();
         DockPanel.SetDock(header, Dock.Top);
+        DockPanel.SetDock(chatRow, Dock.Top);
         DockPanel.SetDock(settingsRow, Dock.Top);
         DockPanel.SetDock(composer, Dock.Bottom);
 
         var root = new DockPanel { LastChildFill = true };
         root.Children.Add(header);
+        root.Children.Add(chatRow);
         root.Children.Add(settingsRow);
         root.Children.Add(composer);
         root.Children.Add(_scroller);
@@ -182,17 +207,32 @@ internal sealed class AgentPanelControl : UserControl
         return bar;
     }
 
-    // Model, permission and New session, kept visually quiet under the header.
+    // The conversation switcher plus New and Delete.
+    private UIElement BuildChatRow()
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(12, 8, 12, 0),
+        };
+        row.Children.Add(LabelFor("Chat", _convCombo));
+        row.Children.Add(MakeGhostButton("New", NewConversation));
+        var del = MakeGhostButton("Delete", DeleteConversation);
+        del.Margin = new Thickness(6, 0, 0, 0);
+        row.Children.Add(del);
+        return row;
+    }
+
+    // Model and permission, kept visually quiet under the chat row.
     private UIElement BuildSettingsRow()
     {
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(12, 8, 12, 2),
+            Margin = new Thickness(12, 6, 12, 2),
         };
         row.Children.Add(LabelFor("Model", _modelCombo));
         row.Children.Add(LabelFor("Permission", _modeCombo));
-        row.Children.Add(MakeGhostButton("New", NewSession));
         return row;
     }
 
@@ -250,6 +290,9 @@ internal sealed class AgentPanelControl : UserControl
 
         _input.Clear();
         AddUserBubble(text);
+        bool firstInChat = _current.Messages.Count == 0;
+        _current.Messages.Add((true, text));
+        if (firstInChat) SetConversationTitle(_current, text);
 
         // The input stays live during a turn so the next message can be composed. If a turn is
         // running, queue this one and send it when the turn ends, instead of dropping it or
@@ -304,6 +347,7 @@ internal sealed class AgentPanelControl : UserControl
         });
         _session = session;
         ClaudeCliOptions options = CurrentOptions();
+        options.Resume = _current.CliSessionId; // continue this chat if it already has a session
         options.SettingsPath = WriteSafetySettings();
         _session.Start(SolutionDirectory(), options);
         _status.Text = "Connected.";
@@ -312,9 +356,14 @@ internal sealed class AgentPanelControl : UserControl
     // CLI events arrive on the pump thread; marshal every UI change to the dispatcher.
     private void OnCliEvent(object sender, CliEvent e)
     {
+        // Ignore late events from a session that has been superseded (Stop, New, or a switch),
+        // so a dying session cannot mutate the conversation that replaced it.
+        if (!ReferenceEquals(sender, _session)) return;
+
         switch (e.Kind)
         {
             case CliEventKind.SystemInit:
+                if (!string.IsNullOrEmpty(e.SessionId)) OnUi(() => _current.CliSessionId = e.SessionId);
                 if (!string.IsNullOrEmpty(e.Model)) OnUi(() => _status.Text = "Model: " + e.Model);
                 break;
 
@@ -342,6 +391,7 @@ internal sealed class AgentPanelControl : UserControl
                     _renderTimer.Stop();
                     _renderPending = false;
                     RenderStreaming();
+                    if (_streamingText.Length > 0) _current.Messages.Add((false, _streamingText));
                     _streamingContainer = null;
                     SetBusy(false);
                     if (e.TotalCostUsd.HasValue)
@@ -595,19 +645,113 @@ internal sealed class AgentPanelControl : UserControl
         PermissionMode = (_modeCombo.SelectedItem as ComboBoxItem)?.Tag as string,
     };
 
-    // Ends the current session and clears the transcript; the next message starts a fresh one
-    // with the currently selected model and permission mode.
-    private void NewSession()
+    // Starts a fresh chat and switches to it.
+    private void NewConversation()
+    {
+        var c = new Conversation();
+        RegisterConversation(c, select: true);
+        SwitchTo(c);
+    }
+
+    // Removes the current chat; keeps at least one around (clearing the last one just resets it).
+    private void DeleteConversation()
+    {
+        if (_convCombo.Items.Count <= 1)
+        {
+            _current.Messages.Clear();
+            _current.CliSessionId = null;
+            SetConversationTitle(_current, "New chat");
+            SwitchTo(_current);
+            return;
+        }
+
+        ComboBoxItem? removing = _current.Item;
+        Conversation? next = null;
+        foreach (var obj in _convCombo.Items)
+        {
+            if (obj is ComboBoxItem it && !ReferenceEquals(it, removing) && it.Tag is Conversation cc) { next = cc; break; }
+        }
+
+        _session?.Dispose();
+        _session = null;
+        _switching = true;
+        if (removing != null) _convCombo.Items.Remove(removing);
+        _switching = false;
+        if (next != null) SwitchTo(next);
+    }
+
+    private void RegisterConversation(Conversation c, bool select)
+    {
+        var item = new ComboBoxItem { Content = c.Title, Tag = c };
+        c.Item = item;
+        _switching = true;
+        _convCombo.Items.Add(item);
+        if (select) _convCombo.SelectedItem = item;
+        _switching = false;
+    }
+
+    private void OnConversationSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (_switching) return;
+        if (_convCombo.SelectedItem is ComboBoxItem item && item.Tag is Conversation c && !ReferenceEquals(c, _current))
+        {
+            SwitchTo(c);
+        }
+    }
+
+    // Drops the running session and shows the target chat; the next message resumes it via --resume.
+    private void SwitchTo(Conversation c)
     {
         _renderTimer.Stop();
         _renderPending = false;
+        _queue.Clear();
         _session?.Dispose();
         _session = null;
         _streamingContainer = null;
-        _queue.Clear();
-        _messages.Children.Clear();
+
+        _current = c;
+        _switching = true;
+        if (c.Item != null) _convCombo.SelectedItem = c.Item;
+        _switching = false;
+
+        RebuildMessages();
         SetBusy(false);
-        _status.Text = "New session - the model and permission apply on your next message.";
+        _status.Text = c.CliSessionId == null
+            ? "New chat - type a message to begin."
+            : "Switched - your next message resumes this chat.";
+    }
+
+    // Repaints the transcript of the current chat from its stored messages.
+    private void RebuildMessages()
+    {
+        _messages.Children.Clear();
+        foreach (var (isUser, text) in _current.Messages)
+        {
+            if (isUser)
+            {
+                AddUserBubble(text);
+            }
+            else
+            {
+                StackPanel container = AddAssistantBubble();
+                RenderMarkdownInto(container, text);
+            }
+        }
+        ScrollToEnd();
+    }
+
+    private void SetConversationTitle(Conversation c, string text)
+    {
+        string title = text.Trim().Replace("\r", " ").Replace("\n", " ");
+        if (title.Length > 32) title = title.Substring(0, 32).TrimEnd() + "...";
+        if (title.Length == 0) title = "New chat";
+        c.Title = title;
+        if (c.Item != null)
+        {
+            _switching = true;
+            c.Item.Content = title;
+            _switching = false;
+        }
     }
 
     // Writes the always-on permission floor (deny destructive shell + secret reads) to a temp
