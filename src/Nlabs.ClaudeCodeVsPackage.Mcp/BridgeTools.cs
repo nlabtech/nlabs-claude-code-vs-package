@@ -61,6 +61,18 @@ public sealed class BridgeTools
     public Task<string> GetDebugState(CancellationToken ct)
         => ForwardAsync("getDebugState", null, ct);
 
+    [McpServerTool(Name = "getSolutionStructure")]
+    [Description("List the solution's projects and their source files.")]
+    public Task<string> GetSolutionStructure(CancellationToken ct)
+        => ForwardAsync("getSolutionStructure", null, ct);
+
+    [McpServerTool(Name = "findSymbols")]
+    [Description("Search the whole solution for declared symbols (types, methods, properties) by name, using Roslyn. Returns each match's name, kind, file and line.")]
+    public Task<string> FindSymbols(
+        [Description("The symbol name (or partial name) to search for.")] string query,
+        CancellationToken ct)
+        => ForwardAsync("findSymbols", new JsonObject { ["query"] = query }, ct);
+
     // --- navigation / editor state ---
 
     [McpServerTool(Name = "openFile")]

@@ -1,9 +1,13 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using EnvDTE;
 using EnvDTE80;
+using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.VisualStudio.ComponentModelHost;
+using Microsoft.VisualStudio.LanguageServices;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Threading;
 using Newtonsoft.Json.Linq;
@@ -103,6 +107,8 @@ namespace Nlabs.ClaudeCodeVsPackage
                 case "readFile": return ReadFile(id, (string?)payload["path"]);
                 case "checkDocumentDirty": return CheckDocumentDirty(id, dte, (string?)payload["path"]);
                 case "getDebugState": return GetDebugState(id, dte);
+                case "getSolutionStructure": return GetSolutionStructure(id, dte);
+                case "findSymbols": return await FindSymbolsAsync(id, (string?)payload["query"]);
 
                 // --- navigation / editor state ---
                 case "openFile": return OpenFile(id, dte, (string?)payload["path"], (int?)payload["line"]);
@@ -249,6 +255,86 @@ namespace Nlabs.ClaudeCodeVsPackage
             }
 
             return Ok(id, result);
+        }
+
+        private string GetSolutionStructure(string? id, DTE2 dte)
+        {
+            var projects = new JArray();
+            Solution? solution = dte.Solution;
+            if (solution != null)
+            {
+                foreach (Project project in solution.Projects)
+                {
+                    string? fullName = null;
+                    try { fullName = project.FullName; } catch { /* solution folder */ }
+
+                    var files = new JArray();
+                    try { CollectFiles(project.ProjectItems, files, 0); } catch { /* ignore */ }
+
+                    projects.Add(new JObject
+                    {
+                        ["name"] = project.Name,
+                        ["path"] = fullName,
+                        ["files"] = files,
+                    });
+                }
+            }
+
+            return Ok(id, new JObject { ["projects"] = projects });
+        }
+
+        // Walk project items a few levels deep, collecting file paths (bounded to stay cheap).
+        private static void CollectFiles(ProjectItems? items, JArray sink, int depth)
+        {
+            if (items == null || depth > 8 || sink.Count >= 1000) return;
+
+            foreach (ProjectItem item in items)
+            {
+                if (sink.Count >= 1000) return;
+                try
+                {
+                    if (item.FileCount > 0)
+                    {
+                        string file = item.FileNames[1]; // 1-based
+                        if (!string.IsNullOrEmpty(file) && File.Exists(file))
+                        {
+                            sink.Add(file);
+                        }
+                    }
+                }
+                catch { /* some items expose no file */ }
+
+                CollectFiles(item.ProjectItems, sink, depth + 1);
+            }
+        }
+
+        // Roslyn symbol search across the solution - a capability the built-in IDE tools lack.
+        private async Task<string> FindSymbolsAsync(string? id, string? query)
+        {
+            if (string.IsNullOrEmpty(query)) return Error(id, "query is required");
+
+            var componentModel = await _services.GetServiceAsync(typeof(SComponentModel)) as IComponentModel;
+            var workspace = componentModel?.GetService<VisualStudioWorkspace>();
+            var solution = workspace?.CurrentSolution;
+            if (solution == null) return Error(id, "no Roslyn workspace");
+
+            var found = await SymbolFinder.FindSourceDeclarationsAsync(solution, query!, ignoreCase: true);
+
+            var symbols = new JArray();
+            foreach (var symbol in found.Take(50))
+            {
+                var location = symbol.Locations.FirstOrDefault(l => l.IsInSource);
+                int line = location != null ? location.GetLineSpan().StartLinePosition.Line + 1 : 0;
+                symbols.Add(new JObject
+                {
+                    ["name"] = symbol.ToDisplayString(),
+                    ["kind"] = symbol.Kind.ToString(),
+                    ["file"] = location?.SourceTree?.FilePath,
+                    ["line"] = line,
+                });
+            }
+
+            return Ok(id, new JObject { ["symbols"] = symbols });
         }
 
         // --- navigation / editor state ---
