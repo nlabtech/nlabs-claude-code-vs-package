@@ -23,8 +23,13 @@
     <FileVersion>0.1.0.0</FileVersion>
   </PropertyGroup>
 
-  <!-- VSIX container: generate pkgdef, put the output assembly in the package, no symbols. -->
+  <!-- VSIX container: generate pkgdef, put the output assembly in the package, no symbols.
+       VSSDKBuildToolsAutoSetup MUST be true: without it the build tools default it to
+       false, the VSSDK targets are never imported, and the project compiles to a DLL but
+       produces NO .vsix (the CreateVsixContainer target does not even exist). This one
+       line is what turns a plain net472 class library into a real VSIX project. -->
   <PropertyGroup>
+    <VSSDKBuildToolsAutoSetup>true</VSSDKBuildToolsAutoSetup>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
     <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
