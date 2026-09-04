@@ -1,11 +1,14 @@
 using System;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Media;
 using EnvDTE;
 using EnvDTE80;
 using Microsoft.VisualStudio.Shell;
 using Nlabs.ClaudeCodeVsPackage.Bridge.Agent;
+using Nlabs.ClaudeCodeVsPackage.Bridge.Markdown;
 
 namespace Nlabs.ClaudeCodeVsPackage.AgentPanel;
 
@@ -32,7 +35,7 @@ internal sealed class AgentPanelControl : UserControl
     private readonly ComboBox _modeCombo;
 
     private ClaudeCliSession? _session;
-    private TextBlock? _streamingReply;
+    private StackPanel? _streamingContainer;
     private string _streamingText = string.Empty;
     private bool _busy;
 
@@ -124,7 +127,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             EnsureSession();
             _streamingText = string.Empty;
-            _streamingReply = AddBubble(string.Empty, isUser: false);
+            _streamingContainer = AddAssistantBubble();
             SetBusy(true);
             await _session!.SendAsync(text);
         }
@@ -163,7 +166,7 @@ internal sealed class AgentPanelControl : UserControl
                 if (!string.IsNullOrEmpty(e.Text))
                 {
                     _streamingText += e.Text;
-                    OnUi(() => { if (_streamingReply != null) _streamingReply.Text = _streamingText; ScrollToEnd(); });
+                    OnUi(() => { RenderStreaming(); ScrollToEnd(); });
                 }
                 break;
 
@@ -171,14 +174,14 @@ internal sealed class AgentPanelControl : UserControl
                 if (!string.IsNullOrEmpty(e.Text))
                 {
                     _streamingText = e.Text!;
-                    OnUi(() => { if (_streamingReply != null) _streamingReply.Text = _streamingText; ScrollToEnd(); });
+                    OnUi(() => { RenderStreaming(); ScrollToEnd(); });
                 }
                 break;
 
             case CliEventKind.Result:
                 OnUi(() =>
                 {
-                    _streamingReply = null;
+                    _streamingContainer = null;
                     SetBusy(false);
                     if (e.TotalCostUsd.HasValue)
                     {
@@ -191,6 +194,7 @@ internal sealed class AgentPanelControl : UserControl
         }
     }
 
+    // A user's turn: plain text, right-aligned. The user typed it, so it needs no markdown pass.
     private TextBlock AddBubble(string text, bool isUser)
     {
         var content = new TextBlock
@@ -200,7 +204,21 @@ internal sealed class AgentPanelControl : UserControl
             Margin = new Thickness(10, 6, 10, 6),
         };
         content.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        WrapInBubble(content, isUser);
+        return content;
+    }
 
+    // Claude's turn: a block container (paragraphs, headings, bullets, code blocks) filled by the
+    // markdown renderer as text streams in.
+    private StackPanel AddAssistantBubble()
+    {
+        var container = new StackPanel { Margin = new Thickness(10, 6, 10, 6) };
+        WrapInBubble(container, isUser: false);
+        return container;
+    }
+
+    private void WrapInBubble(UIElement content, bool isUser)
+    {
         var bubble = new Border
         {
             Child = content,
@@ -216,7 +234,120 @@ internal sealed class AgentPanelControl : UserControl
 
         _messages.Children.Add(bubble);
         ScrollToEnd();
-        return content;
+    }
+
+    // Re-renders the in-flight reply from the accumulated text. Cheap enough per delta for the reply
+    // sizes the panel sees; markdown parsing is pure and the block list is small.
+    private void RenderStreaming()
+    {
+        if (_streamingContainer == null) return;
+        RenderMarkdownInto(_streamingContainer, _streamingText);
+    }
+
+    // Turns parsed markdown blocks into WPF elements: code as a selectable monospace box, headings
+    // bold and larger, bullets with a leading dot, paragraphs with inline bold and code.
+    private void RenderMarkdownInto(StackPanel container, string text)
+    {
+        container.Children.Clear();
+        foreach (MarkdownBlock block in MarkdownDocument.Parse(text))
+        {
+            switch (block.Kind)
+            {
+                case MarkdownBlockKind.Code:
+                    container.Children.Add(BuildCodeBlock(block));
+                    break;
+                case MarkdownBlockKind.Heading:
+                    container.Children.Add(BuildInlineText(block.Text, bold: true,
+                        fontSize: 15 + Math.Max(0, 3 - block.HeadingLevel), topGap: 6));
+                    break;
+                case MarkdownBlockKind.Bullet:
+                    container.Children.Add(BuildBullet(block.Text));
+                    break;
+                default:
+                    container.Children.Add(BuildInlineText(block.Text, bold: false, fontSize: 0, topGap: 2));
+                    break;
+            }
+        }
+    }
+
+    // A read-only, horizontally scrolling monospace box - selectable and copyable, so a demo can lift
+    // the code straight out. An optional language caption sits above it.
+    private UIElement BuildCodeBlock(MarkdownBlock block)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+        if (!string.IsNullOrEmpty(block.Language))
+        {
+            var caption = new TextBlock
+            {
+                Text = block.Language,
+                FontSize = 11,
+                Opacity = 0.6,
+                Margin = new Thickness(2, 0, 0, 2),
+            };
+            caption.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            panel.Children.Add(caption);
+        }
+
+        var code = new TextBox
+        {
+            Text = block.Text,
+            IsReadOnly = true,
+            IsReadOnlyCaretVisible = true,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8),
+            FontFamily = new FontFamily("Consolas, Cascadia Mono, Courier New"),
+            TextWrapping = TextWrapping.NoWrap,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        code.SetResourceReference(TextBox.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
+        code.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        code.SetResourceReference(TextBox.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+        panel.Children.Add(code);
+        return panel;
+    }
+
+    private UIElement BuildBullet(string text)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+        var dot = new TextBlock { Text = "•  ", Margin = new Thickness(0, 0, 0, 0) };
+        dot.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        row.Children.Add(dot);
+        row.Children.Add(BuildInlineText(text, bold: false, fontSize: 0, topGap: 0));
+        return row;
+    }
+
+    // A paragraph/heading/bullet line whose **bold** and `code` spans are real runs.
+    private TextBlock BuildInlineText(string text, bool bold, double fontSize, double topGap)
+    {
+        var tb = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, topGap, 0, 0),
+        };
+        if (fontSize > 0) tb.FontSize = fontSize;
+        if (bold) tb.FontWeight = FontWeights.Bold;
+        tb.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        foreach (MarkdownInline run in MarkdownDocument.ParseInline(text))
+        {
+            switch (run.Kind)
+            {
+                case MarkdownInlineKind.Bold:
+                    tb.Inlines.Add(new Run(run.Text) { FontWeight = FontWeights.Bold });
+                    break;
+                case MarkdownInlineKind.Code:
+                    tb.Inlines.Add(new Run(run.Text)
+                    {
+                        FontFamily = new FontFamily("Consolas, Cascadia Mono, Courier New"),
+                    });
+                    break;
+                default:
+                    tb.Inlines.Add(new Run(run.Text));
+                    break;
+            }
+        }
+        return tb;
     }
 
     // While a turn is running, lock the input so turns cannot interleave, and show progress.
@@ -251,7 +382,7 @@ internal sealed class AgentPanelControl : UserControl
     {
         _session?.Dispose();
         _session = null;
-        _streamingReply = null;
+        _streamingContainer = null;
         _messages.Children.Clear();
         SetBusy(false);
         _status.Text = "New session - the model and permission apply on your next message.";
