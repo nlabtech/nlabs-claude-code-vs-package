@@ -30,12 +30,24 @@ namespace Nlabs.ClaudeCodeVsPackage.AgentPanel;
 /// </summary>
 internal sealed class AgentPanelControl : UserControl
 {
-    // The nLabtech accent - the single fixed colour; everything else is a theme brush so the panel
-    // matches whatever Visual Studio theme is active.
-    private static readonly Brush Accent = Frozen(Color.FromRgb(0x5B, 0x6C, 0xF0));
-    private static readonly Brush AccentHover = Frozen(Color.FromRgb(0x6B, 0x7B, 0xF5));
+    // The accent - the one colour the panel picks itself; the surface follows the Visual Studio theme.
+    // These two are kept mutable and shared: every element paints with the same brush instance, so
+    // recolouring in place (ApplyAccent) repaints the header dot, Send, the user bubbles and the task
+    // ticks at once, with no rebuild. The final Claude palette comes in the design pass.
+    private readonly SolidColorBrush Accent = new SolidColorBrush(Color.FromRgb(0x5B, 0x6C, 0xF0));
+    private readonly SolidColorBrush AccentHover = new SolidColorBrush(Color.FromRgb(0x6B, 0x7B, 0xF5));
     private static readonly Brush OnAccent = Frozen(Color.FromRgb(0xFF, 0xFF, 0xFF));
     private static readonly Brush AssistantFill = Frozen(Color.FromArgb(0x16, 0x9A, 0xA6, 0xC8));
+
+    // The accent choices offered in the settings row. Names stay untranslated - they're colour names.
+    private static readonly (string Name, Color Color)[] Accents =
+    {
+        ("Indigo", Color.FromRgb(0x5B, 0x6C, 0xF0)),
+        ("Violet", Color.FromRgb(0x8B, 0x5C, 0xF6)),
+        ("Teal",   Color.FromRgb(0x14, 0xB8, 0xA6)),
+        ("Amber",  Color.FromRgb(0xD9, 0x77, 0x06)),
+        ("Rose",   Color.FromRgb(0xE1, 0x1D, 0x48)),
+    };
     private static readonly FontFamily MonoFont = new FontFamily("Consolas, Cascadia Mono, Courier New");
 
     // One chat thread: its stored messages plus the CLI session id used to resume it.
@@ -57,6 +69,7 @@ internal sealed class AgentPanelControl : UserControl
     private readonly ComboBox _modeCombo;
     private readonly ComboBox _convCombo;
     private readonly ComboBox _langCombo;
+    private readonly ComboBox _accentCombo;
     private readonly Border _stopButton;
     private readonly Border _tasksBox;
     private readonly StackPanel _tasksList;
@@ -77,7 +90,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["copy"] = "Copy", ["copied"] = "Copied", ["session"] = "session",
                 ["allow"] = "Allow", ["deny"] = "Deny", ["always"] = "Always allow",
                 ["wantsToRun"] = "wants to run", ["allowed"] = "Allowed", ["denied"] = "Denied",
-                ["edit"] = "Edit",
+                ["edit"] = "Edit", ["accent"] = "Accent",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -91,7 +104,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["copy"] = "Kopyala", ["copied"] = "Kopyalandi", ["session"] = "oturum",
                 ["allow"] = "Izin ver", ["deny"] = "Reddet", ["always"] = "Hep izin ver",
                 ["wantsToRun"] = "calistirmak istiyor", ["allowed"] = "Izin verildi", ["denied"] = "Reddedildi",
-                ["edit"] = "Duzenle",
+                ["edit"] = "Duzenle", ["accent"] = "Vurgu",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -113,6 +126,8 @@ internal sealed class AgentPanelControl : UserControl
     private string? _hookScriptPath;
     private readonly System.Collections.Generic.HashSet<string> _alwaysAllow = new System.Collections.Generic.HashSet<string>();
     private readonly ConversationStore _store = new ConversationStore();
+    private readonly PanelPreferencesStore _prefs = new PanelPreferencesStore();
+    private bool _prefsLoaded; // suppresses saves while the constructor applies the stored choices
     private string _workspaceKey = string.Empty;
 
     public AgentPanelControl()
@@ -190,6 +205,11 @@ internal sealed class AgentPanelControl : UserControl
         _langCombo.SelectedIndex = 0;
         _langCombo.SelectionChanged += (_, __) => OnLanguageChanged();
 
+        _accentCombo = new ComboBox { MinWidth = 90, FontSize = 12, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
+        foreach (var a in Accents) _accentCombo.Items.Add(new ComboBoxItem { Content = a.Name, Tag = a.Name });
+        _accentCombo.SelectedIndex = 0;
+        _accentCombo.SelectionChanged += (_, __) => OnAccentChanged();
+
         _stopButton = MakeGhostButton("stop", () => _ = StopAsync());
 
         // Live to-do strip - hidden until the agent writes a task list, updated as it progresses.
@@ -248,6 +268,10 @@ internal sealed class AgentPanelControl : UserControl
         root.Children.Add(composer);
         root.Children.Add(_scroller);
         Content = root;
+
+        // Everything is built and every label registered, so it's safe to apply the stored choices -
+        // selecting an item fires the change handlers, which re-localize and recolour.
+        ApplyPreferences();
     }
 
     // The brand bar: product name plus a subtle nLabtech tag, over a hairline divider.
@@ -314,6 +338,7 @@ internal sealed class AgentPanelControl : UserControl
         row.Children.Add(LabelFor("model", _modelCombo));
         row.Children.Add(LabelFor("permission", _modeCombo));
         row.Children.Add(LabelFor("language", _langCombo));
+        row.Children.Add(LabelFor("accent", _accentCombo));
         return row;
     }
 
@@ -1185,6 +1210,62 @@ internal sealed class AgentPanelControl : UserControl
         _lang = (_langCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "en";
         foreach (Action apply in _localizers) apply();
         RebuildMessages(); // role labels are rebuilt with the new language
+        SavePreferences();
+    }
+
+    private void OnAccentChanged()
+    {
+        int i = Array.FindIndex(Accents, a => a.Name == ((_accentCombo.SelectedItem as ComboBoxItem)?.Tag as string));
+        if (i < 0) i = 0;
+        ApplyAccent(Accents[i].Color);
+        SavePreferences();
+    }
+
+    // Recolours the shared accent brushes in place; every element painted with them follows.
+    private void ApplyAccent(Color c)
+    {
+        Accent.Color = c;
+        AccentHover.Color = Lighten(c, 0.14);
+    }
+
+    private static Color Lighten(Color c, double t) => Color.FromRgb(
+        (byte)(c.R + (255 - c.R) * t),
+        (byte)(c.G + (255 - c.G) * t),
+        (byte)(c.B + (255 - c.B) * t));
+
+    // Applies the saved language and accent to the combos. The flag keeps the resulting change events
+    // from writing the file straight back while we're still loading it.
+    private void ApplyPreferences()
+    {
+        PanelPreferences p = _prefs.Load();
+
+        SelectByTag(_langCombo, p.Language);
+        SelectByTag(_accentCombo, p.Accent);
+        // A no-op selection (already on the stored value) won't have fired the handler, so apply directly.
+        _lang = (_langCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "en";
+        foreach (Action apply in _localizers) apply();
+        int ai = Array.FindIndex(Accents, a => a.Name == p.Accent);
+        ApplyAccent(Accents[ai < 0 ? 0 : ai].Color);
+
+        _prefsLoaded = true;
+    }
+
+    private void SavePreferences()
+    {
+        if (!_prefsLoaded) return;
+        _prefs.Save(new PanelPreferences
+        {
+            Language = _lang,
+            Accent = (_accentCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "Indigo",
+        });
+    }
+
+    private static void SelectByTag(ComboBox combo, string tag)
+    {
+        foreach (object item in combo.Items)
+        {
+            if (item is ComboBoxItem ci && (ci.Tag as string) == tag) { combo.SelectedItem = ci; return; }
+        }
     }
 
     private ComboBox MakeCombo((string label, string? value)[] options)
