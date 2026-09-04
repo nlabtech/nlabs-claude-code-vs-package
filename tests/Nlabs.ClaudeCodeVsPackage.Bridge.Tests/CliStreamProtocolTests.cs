@@ -48,6 +48,31 @@ public class CliStreamProtocolTests
     }
 
     [Fact]
+    public void Assistant_surfaces_tool_calls_with_a_summary()
+    {
+        var line = "{\"type\":\"assistant\",\"message\":{\"content\":[" +
+                   "{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"git status\"}}," +
+                   "{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"Program.cs\"}}," +
+                   "{\"type\":\"tool_use\",\"name\":\"TodoWrite\",\"input\":{\"todos\":[]}}]}}";
+
+        var e = CliStreamProtocol.Parse(line);
+
+        Assert.NotNull(e.Tools);
+        Assert.Equal(2, e.Tools!.Count); // TodoWrite is skipped - it shows as the task strip
+        Assert.Equal("Bash", e.Tools[0].Name);
+        Assert.Equal("git status", e.Tools[0].Summary);
+        Assert.Equal("Read", e.Tools[1].Name);
+        Assert.Equal("Program.cs", e.Tools[1].Summary);
+    }
+
+    [Fact]
+    public void Assistant_with_only_text_has_no_tools()
+    {
+        var e = CliStreamProtocol.Parse("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}");
+        Assert.Null(e.Tools);
+    }
+
+    [Fact]
     public void Parse_system_init_reads_model_and_session()
     {
         var e = CliStreamProtocol.Parse(

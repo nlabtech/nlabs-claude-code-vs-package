@@ -36,6 +36,13 @@ public sealed class ImageAttachment
     public string Base64Data { get; set; } = string.Empty;
 }
 
+/// <summary>A tool the agent invoked this turn: its name and a one-line summary of the call.</summary>
+public sealed class ToolCall
+{
+    public string Name { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+}
+
 /// <summary>One parsed event from the CLI's stream-json output.</summary>
 public sealed class CliEvent
 {
@@ -49,6 +56,9 @@ public sealed class CliEvent
 
     /// <summary>The agent's to-do list when this assistant turn wrote one; null otherwise.</summary>
     public System.Collections.Generic.IReadOnlyList<TodoItem>? Todos { get; set; }
+
+    /// <summary>The tools this assistant turn invoked, in order; null when it called none.</summary>
+    public System.Collections.Generic.IReadOnlyList<ToolCall>? Tools { get; set; }
 }
 
 /// <summary>
@@ -139,6 +149,7 @@ public static class CliStreamProtocol
                     Kind = CliEventKind.Assistant,
                     Text = JoinTextBlocks(assistantContent),
                     Todos = ExtractTodos(assistantContent),
+                    Tools = ExtractTools(assistantContent),
                     SessionId = (string?)obj["session_id"],
                     Raw = line,
                 };
@@ -190,6 +201,58 @@ public static class CliStreamProtocol
             return list;
         }
         return null;
+    }
+
+    // Turns each tool_use block into a name plus a short summary, so the panel can show a one-line
+    // chip per call ("Bash - git status", "Read - Program.cs"). The TodoWrite call is skipped - it
+    // already surfaces as the live task strip, not as a chip.
+    private static System.Collections.Generic.IReadOnlyList<ToolCall>? ExtractTools(JArray? content)
+    {
+        if (content == null) return null;
+        System.Collections.Generic.List<ToolCall>? list = null;
+        foreach (var block in content)
+        {
+            if ((string?)block["type"] != "tool_use") continue;
+            string name = (string?)block["name"] ?? "tool";
+            if (name == "TodoWrite") continue;
+            (list ??= new System.Collections.Generic.List<ToolCall>()).Add(new ToolCall
+            {
+                Name = name,
+                Summary = SummariseToolInput(name, block["input"]),
+            });
+        }
+        return list;
+    }
+
+    // A readable one-liner for a tool call: the field that matters for the common tools, else the
+    // first short string in the input. Always trimmed to a single line of reasonable length.
+    private static string SummariseToolInput(string name, JToken? input)
+    {
+        if (input == null) return string.Empty;
+
+        string[] preferred = { "command", "file_path", "path", "pattern", "url", "query", "description", "prompt" };
+        foreach (string key in preferred)
+        {
+            var v = input[key];
+            if (v != null && v.Type == JTokenType.String)
+            {
+                return Shorten((string?)v);
+            }
+        }
+
+        foreach (var prop in ((input as JObject)?.Properties() ?? System.Linq.Enumerable.Empty<JProperty>()))
+        {
+            if (prop.Value.Type == JTokenType.String) return Shorten((string?)prop.Value);
+        }
+        return string.Empty;
+    }
+
+    private static string Shorten(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        s = s!.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        const int max = 120;
+        return s.Length <= max ? s : s.Substring(0, max) + "...";
     }
 
     private static string JoinTextBlocks(JArray? content)

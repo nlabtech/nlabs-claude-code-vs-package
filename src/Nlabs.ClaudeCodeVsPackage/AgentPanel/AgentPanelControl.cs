@@ -505,8 +505,12 @@ internal sealed class AgentPanelControl : UserControl
         try
         {
             EnsureSession();
+            // The reply bubble is opened lazily (on the first text delta or after a tool chip), not
+            // up front, so a turn that opens with a tool call renders the chip before any text bubble.
             _streamingText = string.Empty;
-            _streamingContainer = AddAssistantBubble();
+            _streamingContainer = null;
+            _streamingColumn = null;
+            _streamingTextBlock = null;
             _renderPending = false;
             _renderTimer.Start();
             SetBusy(true);
@@ -579,7 +583,20 @@ internal sealed class AgentPanelControl : UserControl
                 break;
 
             case CliEventKind.Assistant:
-                if (!string.IsNullOrEmpty(e.Text))
+                if (e.Tools != null)
+                {
+                    // A tool step: close the text so far into its own bubble, then drop a chip per call.
+                    // Prefer the message's own text (authoritative) in case a delta lagged behind.
+                    var tools = e.Tools;
+                    string? preface = e.Text;
+                    OnUi(() =>
+                    {
+                        if (!string.IsNullOrEmpty(preface)) _streamingText = preface!;
+                        FlushAssistantText();
+                        foreach (ToolCall call in tools) AddToolChip(call);
+                    });
+                }
+                else if (!string.IsNullOrEmpty(e.Text))
                 {
                     _streamingText = e.Text!;
                     _renderPending = true;
@@ -589,19 +606,9 @@ internal sealed class AgentPanelControl : UserControl
             case CliEventKind.Result:
                 OnUi(() =>
                 {
-                    // Turn done: render the full markdown once (code boxes and all), then stop.
+                    // Turn done: finalize whatever text is still open, then stop the render loop.
                     _renderTimer.Stop();
-                    _renderPending = false;
-                    if (_streamingContainer != null) RenderMarkdownInto(_streamingContainer, _streamingText);
-                    _streamingTextBlock = null;
-                    if (_streamingText.Length > 0)
-                    {
-                        string finalText = _streamingText;
-                        _current.Messages.Add((false, finalText));
-                        if (_streamingColumn != null) AppendActions(_streamingColumn, () => finalText, isUser: false);
-                    }
-                    _streamingContainer = null;
-                    _streamingColumn = null;
+                    FlushAssistantText();
                     SetBusy(false);
                     if (e.TotalCostUsd.HasValue)
                     {
@@ -662,7 +669,50 @@ internal sealed class AgentPanelControl : UserControl
         streaming.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         container.Children.Add(streaming);
         _streamingTextBlock = streaming;
+        _streamingContainer = container;
         return container;
+    }
+
+    // Opens a fresh reply bubble on demand - the turn doesn't create one up front, so a turn that
+    // starts with a tool call shows the chip first and text lands in a bubble opened after it.
+    private void EnsureStreamingBubble()
+    {
+        if (_streamingTextBlock == null) AddAssistantBubble();
+    }
+
+    // Finalizes the current reply bubble: renders its markdown, records it, and attaches Copy. Called
+    // before a tool chip (so text and chips keep their order) and at the end of the turn. Idempotent.
+    private void FlushAssistantText()
+    {
+        _renderPending = false;
+        if (_streamingTextBlock != null && _streamingText.Length > 0)
+        {
+            if (_streamingContainer != null) RenderMarkdownInto(_streamingContainer, _streamingText);
+            string finalText = _streamingText;
+            _current.Messages.Add((false, finalText));
+            if (_streamingColumn != null) AppendActions(_streamingColumn, () => finalText, isUser: false);
+        }
+        _streamingContainer = null;
+        _streamingColumn = null;
+        _streamingTextBlock = null;
+        _streamingText = string.Empty;
+    }
+
+    // One tool call as a compact chip in the feed: an accent dot, the tool name, and a muted summary.
+    private void AddToolChip(ToolCall call)
+    {
+        var line = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(14, 3, 8, 3) };
+        line.Inlines.Add(new Run("●  ") { Foreground = Accent }); // leading dot
+        line.Inlines.Add(new Run(call.Name) { FontWeight = FontWeights.SemiBold });
+        if (!string.IsNullOrEmpty(call.Summary))
+        {
+            var detail = new Run("  " + call.Summary) { FontFamily = MonoFont };
+            line.Inlines.Add(detail);
+        }
+        line.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        line.Opacity = 0.85;
+        _messages.Children.Add(line);
+        ScrollToEndIfAtBottom();
     }
 
     // A completed assistant message restored from history: rendered and given a Copy action at once.
@@ -753,7 +803,9 @@ internal sealed class AgentPanelControl : UserControl
     // Cheap per-delta update: just set the streaming TextBlock's text, no tree rebuild.
     private void RenderStreaming()
     {
-        if (_streamingTextBlock != null) _streamingTextBlock.Text = _streamingText;
+        if (_streamingText.Length == 0) return;
+        EnsureStreamingBubble();
+        _streamingTextBlock!.Text = _streamingText;
     }
 
     // Turns parsed markdown blocks into WPF elements: code as a selectable monospace box, headings
