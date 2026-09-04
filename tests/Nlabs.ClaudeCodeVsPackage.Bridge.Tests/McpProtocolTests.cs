@@ -30,9 +30,24 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Tests
 
             public Task<JObject> CallAsync(string name, JObject arguments, CancellationToken cancellationToken)
             {
-                if (name != "echo") throw new McpUnknownToolException(name);
                 if (_throwOnCall) throw new InvalidOperationException("boom");
-                return Task.FromResult(new JObject { ["echoed"] = arguments });
+                if (name == "echo") return Task.FromResult(new JObject { ["echoed"] = arguments });
+
+                // A tool that returns a ready MCP result (bare-string content blocks), like the
+                // native openDiff's FILE_SAVED reply; the protocol must pass it through untouched.
+                if (name == "twoBlocks")
+                {
+                    return Task.FromResult(new JObject
+                    {
+                        ["content"] = new JArray
+                        {
+                            new JObject { ["type"] = "text", ["text"] = "FILE_SAVED" },
+                            new JObject { ["type"] = "text", ["text"] = "final body" },
+                        },
+                    });
+                }
+
+                throw new McpUnknownToolException(name);
             }
         }
 
@@ -75,6 +90,19 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Tests
             string text = (string)((JArray)response["result"]!["content"]!)[0]!["text"]!;
             Assert.Contains("echoed", text);
             Assert.Contains("hi", text);
+        }
+
+        [Fact]
+        public async Task A_ready_content_result_is_passed_through_unchanged()
+        {
+            var response = await Handle(NewProtocol(),
+                "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"twoBlocks\",\"arguments\":{}}}");
+
+            var content = (JArray)response["result"]!["content"]!;
+            Assert.Equal(2, content.Count);
+            Assert.Equal("FILE_SAVED", (string)content[0]!["text"]!);
+            Assert.Equal("final body", (string)content[1]!["text"]!);
+            Assert.False((bool)response["result"]!["isError"]!);
         }
 
         [Fact]

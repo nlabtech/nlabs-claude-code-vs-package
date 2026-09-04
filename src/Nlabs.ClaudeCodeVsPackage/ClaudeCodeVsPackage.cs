@@ -1,10 +1,17 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.Design;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using EnvDTE;
+using EnvDTE80;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
+using Nlabs.ClaudeCodeVsPackage.Bridge;
+using Nlabs.ClaudeCodeVsPackage.Bridge.Ide;
+using Nlabs.ClaudeCodeVsPackage.Bridge.Mcp;
 using Task = System.Threading.Tasks.Task;
 
 namespace Nlabs.ClaudeCodeVsPackage
@@ -12,19 +19,16 @@ namespace Nlabs.ClaudeCodeVsPackage
     /// <summary>
     /// The extension entry point.
     ///
-    /// Loaded in the background when a solution opens (AllowsBackgroundLoading), so
-    /// loading never blocks the UI thread. This skeleton version does no real work;
-    /// later steps will start the local bridge (a WebSocket server that listens only
-    /// on 127.0.0.1) from here.
+    /// Loaded in the background when a solution opens (AllowsBackgroundLoading), so loading never
+    /// blocks the UI thread. On load it starts a local bridge - a WebSocket server bound to
+    /// 127.0.0.1 - and writes a discovery lock file to <c>~/.claude/ide</c> so Claude Code finds
+    /// Visual Studio with its <c>/ide</c> command. The bridge speaks the Model Context Protocol,
+    /// so the extension is a first-class IDE connection; its tools are NOT namespaced behind an
+    /// <c>mcp__</c> prefix.
     ///
-    /// UseManagedResourcesOnly = true: package resources are looked up on the managed
-    /// side.
-    ///
-    /// ProvideMenuResource is the easy-to-miss part: it tells Visual Studio to load and
-    /// MERGE the compiled command table ("Menus.ctmenu") from this package. The .vsct can
-    /// compile, the .vsix can build, and the command handler can register - but WITHOUT
-    /// this attribute the menu item simply never appears, and nothing errors out. The id
-    /// "Menus.ctmenu" must match the VSCTCompile ResourceName in the .csproj.
+    /// ProvideMenuResource is the easy-to-miss part: it tells Visual Studio to load and MERGE the
+    /// compiled command table ("Menus.ctmenu"). Without it the menu item never appears and nothing
+    /// errors out. The id must match the VSCTCompile ResourceName in the .csproj.
     /// </summary>
     [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
     [ProvideAutoLoad(VSConstants.UICONTEXT.SolutionExists_string, PackageAutoLoadFlags.BackgroundLoad)]
@@ -35,23 +39,26 @@ namespace Nlabs.ClaudeCodeVsPackage
         /// <summary>The package's unique id. The registration (pkgdef) matches on this.</summary>
         public const string PackageGuidString = "952c382f-7793-44ac-beab-e4c14cd9470c";
 
+        private const string ServerName = "Visual Studio";
+        private const string ServerVersion = "0.1.0";
+
         /// <summary>The local WebSocket bridge (127.0.0.1). Started on load, disposed on shutdown.</summary>
-        private Bridge.BridgeServer? _bridge;
+        private BridgeServer? _bridge;
 
-        /// <summary>Routes bridge messages to Visual Studio actions.</summary>
-        private BridgeRouter? _router;
+        /// <summary>Manages proposed-change diffs and their accept/reject verdicts.</summary>
+        private DiffSession? _diff;
 
-        /// <summary>
-        /// Package initialization. After the base call we may switch to the main thread,
-        /// but we do nothing here yet.
-        /// </summary>
+        /// <summary>The discovery lock file writer, and the port whose lock is currently written.</summary>
+        private readonly IdeLockFile _lockFile = new IdeLockFile();
+        private int _lockedPort;
+
         protected override async Task InitializeAsync(
             CancellationToken cancellationToken,
             IProgress<ServiceProgressData> progress)
         {
             await base.InitializeAsync(cancellationToken, progress);
 
-            // Adding a command touches the menu service, which lives on the UI thread.
+            // Adding a command and reading DTE both live on the UI thread.
             await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
 
             if (await GetServiceAsync(typeof(IMenuCommandService)) is OleMenuCommandService commandService)
@@ -60,47 +67,137 @@ namespace Nlabs.ClaudeCodeVsPackage
                 commandService.AddCommand(new MenuCommand(OnRestartBridge, commandId));
             }
 
-            // Start the local bridge and wire it to Visual Studio through the router.
             StartBridge();
         }
 
-        /// <summary>Creates the bridge server + router and starts listening on 127.0.0.1.</summary>
+        /// <summary>Starts the bridge, wires it to the MCP handler, and writes the discovery lock file.</summary>
         private void StartBridge()
         {
-            _bridge = new Bridge.BridgeServer();
-            _router = new BridgeRouter(_bridge, JoinableTaskFactory, this);
-            _bridge.Start();
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            _bridge = new BridgeServer();
+            _diff = new DiffSession(this, JoinableTaskFactory);
+            var catalog = new VsToolCatalog(this, JoinableTaskFactory, _diff);
+            var protocol = new McpProtocol(catalog, ServerName, ServerVersion);
+            BridgeServer bridge = _bridge;
+
+            // Each inbound MCP message is handled off the receive loop; a null reply (a
+            // notification) is simply not sent back.
+            bridge.MessageReceived += (_, json) =>
+            {
+                _ = JoinableTaskFactory.RunAsync(async () =>
+                {
+                    string? reply = await protocol.HandleAsync(json, CancellationToken.None);
+                    if (reply != null)
+                    {
+                        await bridge.SendAsync(reply);
+                    }
+                });
+            };
+
+            bridge.Start();
+
+            // Advertise the endpoint so `claude` can discover Visual Studio. The lock file carries
+            // only the port, this process id, the connection token and the open workspace folders -
+            // nothing about the machine, the account or the subscription.
+            _lockedPort = bridge.Port;
+            _lockFile.Write(
+                port: bridge.Port,
+                authToken: bridge.Token,
+                processId: CurrentProcessId(),
+                ideName: ServerName,
+                workspaceFolders: CollectWorkspaceFolders());
         }
 
-        /// <summary>Restarts the bridge and shows the connection info to paste into Claude Code.</summary>
+        /// <summary>Removes the current lock file and tears down the bridge and diff session.</summary>
+        private void StopBridge()
+        {
+            if (_lockedPort != 0)
+            {
+                _lockFile.Remove(_lockedPort);
+                _lockedPort = 0;
+            }
+
+            _diff?.Dispose();
+            _diff = null;
+
+            _bridge?.Dispose();
+            _bridge = null;
+        }
+
+        /// <summary>Restarts the bridge and shows the connection info.</summary>
         private void OnRestartBridge(object sender, EventArgs e)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
 
-            _bridge?.Dispose();
+            StopBridge();
             StartBridge();
 
             string info =
                 $"Local bridge listening on 127.0.0.1:{_bridge!.Port}\n\n" +
-                "Token (paste into Claude Code):\n" +
-                _bridge.Token;
+                "Discovery lock file written to ~/.claude/ide.\n" +
+                "In a terminal, run:  claude  then  /ide";
 
             VsShellUtilities.ShowMessageBox(
                 this,
                 info,
-                "Local Bridge",
+                "Claude Code bridge",
                 OLEMSGICON.OLEMSGICON_INFO,
                 OLEMSGBUTTON.OLEMSGBUTTON_OK,
                 OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
+        }
+
+        /// <summary>The directories of the open solution's projects; the CLI treats these as roots.</summary>
+        private IEnumerable<string> CollectWorkspaceFolders()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            var folders = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Resolved synchronously on the UI thread - GetGlobalService is the safe (non-blocking)
+            // way to reach DTE here, avoiding a sync-over-async wait on GetServiceAsync.
+            if (!(GetGlobalService(typeof(DTE)) is DTE2 dte)) return folders;
+
+            try
+            {
+                Solution? solution = dte.Solution;
+                if (solution == null) return folders;
+
+                string? solutionDir = null;
+                try { if (!string.IsNullOrEmpty(solution.FullName)) solutionDir = Path.GetDirectoryName(solution.FullName); }
+                catch { /* unsaved solution */ }
+                if (solutionDir != null && seen.Add(solutionDir)) folders.Add(solutionDir);
+
+                foreach (Project project in solution.Projects)
+                {
+                    try
+                    {
+                        if (string.IsNullOrEmpty(project.FullName)) continue;
+                        string? dir = Path.GetDirectoryName(project.FullName);
+                        if (dir != null && seen.Add(dir)) folders.Add(dir);
+                    }
+                    catch { /* solution folders have no FullName */ }
+                }
+            }
+            catch { /* best effort - an empty list is fine */ }
+
+            return folders;
+        }
+
+        private static int CurrentProcessId()
+        {
+            using (var process = System.Diagnostics.Process.GetCurrentProcess())
+            {
+                return process.Id;
+            }
         }
 
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
-                _bridge?.Dispose();
-                _bridge = null;
-                _router = null;
+                StopBridge();
             }
 
             base.Dispose(disposing);

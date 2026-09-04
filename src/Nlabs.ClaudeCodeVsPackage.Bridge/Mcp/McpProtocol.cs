@@ -154,7 +154,7 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Mcp
             try
             {
                 JObject result = await _catalog.CallAsync(name!, arguments, cancellationToken).ConfigureAwait(false);
-                return Result(id, ToolContent(result.ToString(Formatting.None), isError: false));
+                return Result(id, AsToolResult(result));
             }
             catch (McpUnknownToolException)
             {
@@ -166,6 +166,23 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Mcp
                 // error - so a single failing call never drops the whole connection.
                 return Result(id, ToolContent(ex.Message, isError: true));
             }
+        }
+
+        /// <summary>
+        /// Turns what a catalog returned into an MCP tool result. A catalog usually returns
+        /// its structured data, which we wrap as a single JSON text block - exactly how a
+        /// native IDE serves its data tools. A catalog may instead hand back a ready result
+        /// (an object with a "content" array), so a tool whose reply is a bare string token
+        /// - close_tab's "TAB_CLOSED", a diff's "FILE_SAVED" - can shape its own content.
+        /// </summary>
+        private static JObject AsToolResult(JObject fromCatalog)
+        {
+            if (fromCatalog["content"] is JArray)
+            {
+                if (fromCatalog["isError"] == null) { fromCatalog["isError"] = false; }
+                return fromCatalog;
+            }
+            return ToolContent(fromCatalog.ToString(Formatting.None), isError: false);
         }
 
         private static JObject ToolContent(string text, bool isError)
