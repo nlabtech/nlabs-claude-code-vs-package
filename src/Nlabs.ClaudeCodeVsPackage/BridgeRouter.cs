@@ -1,10 +1,12 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using EnvDTE;
 using EnvDTE80;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.VisualStudio.ComponentModelHost;
 using Microsoft.VisualStudio.LanguageServices;
@@ -12,6 +14,12 @@ using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Threading;
 using Newtonsoft.Json.Linq;
 using Nlabs.ClaudeCodeVsPackage.Bridge;
+
+// EnvDTE and Microsoft.CodeAnalysis both define Document/Solution/Project. The editor-state
+// handlers mean the EnvDTE ones; the Roslyn equivalents are only ever used through 'var'.
+using Document = EnvDTE.Document;
+using Solution = EnvDTE.Solution;
+using Project = EnvDTE.Project;
 
 // Every handler below is reached only through HandleAsync, which switches to the main thread
 // before dispatching, so all DTE access here is on the UI thread. The threading analyzer
@@ -109,6 +117,13 @@ namespace Nlabs.ClaudeCodeVsPackage
                 case "getDebugState": return GetDebugState(id, dte);
                 case "getSolutionStructure": return GetSolutionStructure(id, dte);
                 case "findSymbols": return await FindSymbolsAsync(id, (string?)payload["query"]);
+                case "findReferences": return await FindReferencesAsync(id, (string?)payload["file"], (int?)payload["line"], (int?)payload["column"]);
+
+                // --- debugger depth ---
+                case "getCallStack": return GetCallStack(id, dte);
+                case "evaluateExpression": return EvaluateExpression(id, dte, (string?)payload["expression"]);
+                case "listBreakpoints": return ListBreakpoints(id, dte);
+                case "removeBreakpoint": return RemoveBreakpoint(id, dte, (string?)payload["file"], (int?)payload["line"]);
 
                 // --- navigation / editor state ---
                 case "openFile": return OpenFile(id, dte, (string?)payload["path"], (int?)payload["line"]);
@@ -119,8 +134,10 @@ namespace Nlabs.ClaudeCodeVsPackage
                 // --- single-writer mutation ---
                 case "openDiff": return await OpenDiffAsync(id, (string?)payload["file"], (string?)payload["proposedText"]);
 
-                // --- build (beyond the built-in set) ---
+                // --- build / tests / vcs (beyond the built-in set) ---
                 case "buildSolution": return BuildSolution(id, dte);
+                case "runTests": return await RunTestsAsync(id, dte, (string?)payload["filter"]);
+                case "gitStatus": return await GitStatusAsync(id, dte);
 
                 // --- debugger control (Visual Studio's edge) ---
                 case "addBreakpoint": return AddBreakpoint(id, dte, (string?)payload["file"], (int?)payload["line"]);
@@ -337,6 +354,133 @@ namespace Nlabs.ClaudeCodeVsPackage
             return Ok(id, new JObject { ["symbols"] = symbols });
         }
 
+        // Find all references to the symbol at a file/line/column, using Roslyn.
+        private async Task<string> FindReferencesAsync(string? id, string? file, int? line, int? column)
+        {
+            if (string.IsNullOrEmpty(file) || !line.HasValue || !column.HasValue)
+            {
+                return Error(id, "file, line and column are required");
+            }
+
+            var componentModel = await _services.GetServiceAsync(typeof(SComponentModel)) as IComponentModel;
+            var workspace = componentModel?.GetService<VisualStudioWorkspace>();
+            var solution = workspace?.CurrentSolution;
+            if (solution == null) return Error(id, "no Roslyn workspace");
+
+            var documentId = solution.GetDocumentIdsWithFilePath(file).FirstOrDefault();
+            var document = documentId != null ? solution.GetDocument(documentId) : null;
+            if (document == null) return Error(id, "file is not part of the solution");
+
+            var text = await document.GetTextAsync();
+            if (line.Value < 1 || line.Value > text.Lines.Count) return Error(id, "line out of range");
+            int position = text.Lines[line.Value - 1].Start + Math.Max(0, column.Value - 1);
+
+            var semanticModel = await document.GetSemanticModelAsync();
+            var root = await document.GetSyntaxRootAsync();
+            if (semanticModel == null || root == null) return Error(id, "no semantic model");
+
+            var node = root.FindToken(position).Parent;
+            ISymbol? symbol = node == null
+                ? null
+                : semanticModel.GetSymbolInfo(node).Symbol ?? semanticModel.GetDeclaredSymbol(node);
+            if (symbol == null) return Error(id, "no symbol at that position");
+
+            var references = new JArray();
+            foreach (var referenced in await SymbolFinder.FindReferencesAsync(symbol, solution))
+            {
+                foreach (var location in referenced.Locations)
+                {
+                    if (references.Count >= 200) break;
+                    var span = location.Location.GetLineSpan();
+                    references.Add(new JObject
+                    {
+                        ["file"] = span.Path,
+                        ["line"] = span.StartLinePosition.Line + 1,
+                        ["column"] = span.StartLinePosition.Character + 1,
+                    });
+                }
+            }
+
+            return Ok(id, new JObject
+            {
+                ["symbol"] = symbol.ToDisplayString(),
+                ["references"] = references,
+            });
+        }
+
+        private string GetCallStack(string? id, DTE2 dte)
+        {
+            Debugger debugger = dte.Debugger;
+            if (debugger.CurrentMode != dbgDebugMode.dbgBreakMode) return Error(id, "not in break mode");
+
+            var frames = new JArray();
+            var thread = debugger.CurrentThread;
+            if (thread != null)
+            {
+                foreach (StackFrame frame in thread.StackFrames)
+                {
+                    frames.Add(new JObject
+                    {
+                        ["function"] = frame.FunctionName,
+                        ["language"] = frame.Language,
+                    });
+                }
+            }
+
+            return Ok(id, new JObject { ["frames"] = frames });
+        }
+
+        private string EvaluateExpression(string? id, DTE2 dte, string? expression)
+        {
+            if (string.IsNullOrEmpty(expression)) return Error(id, "expression is required");
+
+            Debugger debugger = dte.Debugger;
+            if (debugger.CurrentMode != dbgDebugMode.dbgBreakMode) return Error(id, "not in break mode");
+
+            Expression evaluated = debugger.GetExpression(expression, UseAutoExpandRules: true);
+            return Ok(id, new JObject
+            {
+                ["name"] = evaluated.Name,
+                ["value"] = evaluated.Value,
+                ["type"] = evaluated.Type,
+                ["isValid"] = evaluated.IsValidValue,
+            });
+        }
+
+        private string ListBreakpoints(string? id, DTE2 dte)
+        {
+            var breakpoints = new JArray();
+            foreach (Breakpoint breakpoint in dte.Debugger.Breakpoints)
+            {
+                breakpoints.Add(new JObject
+                {
+                    ["file"] = breakpoint.File,
+                    ["line"] = breakpoint.FileLine,
+                    ["enabled"] = breakpoint.Enabled,
+                    ["condition"] = breakpoint.Condition,
+                });
+            }
+
+            return Ok(id, new JObject { ["breakpoints"] = breakpoints });
+        }
+
+        private string RemoveBreakpoint(string? id, DTE2 dte, string? file, int? line)
+        {
+            if (string.IsNullOrEmpty(file) || !line.HasValue) return Error(id, "file and line are required");
+
+            foreach (Breakpoint breakpoint in dte.Debugger.Breakpoints)
+            {
+                if (string.Equals(breakpoint.File, file, StringComparison.OrdinalIgnoreCase) &&
+                    breakpoint.FileLine == line.Value)
+                {
+                    breakpoint.Delete();
+                    return Ok(id, new JObject { ["removed"] = true });
+                }
+            }
+
+            return Ok(id, new JObject { ["removed"] = false });
+        }
+
         // --- navigation / editor state ---
 
         private string OpenFile(string? id, DTE2 dte, string? path, int? line)
@@ -403,6 +547,89 @@ namespace Nlabs.ClaudeCodeVsPackage
                 ["failedProjects"] = build.LastBuildInfo, // 0 == success
                 ["succeeded"] = build.LastBuildInfo == 0,
             });
+        }
+
+        // --- tests / vcs (run fixed tools off the UI thread) ---
+
+        private async Task<string> RunTestsAsync(string? id, DTE2 dte, string? filter)
+        {
+            string? dir = SolutionDirectory(dte);
+            if (string.IsNullOrEmpty(dir)) return Error(id, "no solution directory");
+
+            // Only a conservative filter is allowed through; reject anything that could break
+            // out of the single --filter argument.
+            string args = "test --nologo";
+            if (!string.IsNullOrEmpty(filter))
+            {
+                if (filter!.IndexOfAny(new[] { '"', '\'', '&', '|', '<', '>', '\n', '\r' }) >= 0)
+                {
+                    return Error(id, "invalid filter");
+                }
+                args += $" --filter \"{filter}\"";
+            }
+
+            var (exitCode, output) = await Task.Run(() => RunProcess("dotnet", args, dir!));
+            return Ok(id, new JObject
+            {
+                ["exitCode"] = exitCode,
+                ["succeeded"] = exitCode == 0,
+                ["output"] = Tail(output, 8000),
+            });
+        }
+
+        private async Task<string> GitStatusAsync(string? id, DTE2 dte)
+        {
+            string? dir = SolutionDirectory(dte);
+            if (string.IsNullOrEmpty(dir)) return Error(id, "no solution directory");
+
+            var (exitCode, output) = await Task.Run(() => RunProcess("git", "status --porcelain=v1 --branch", dir!));
+            if (exitCode != 0) return Error(id, "git is unavailable or this is not a repository");
+
+            return Ok(id, new JObject { ["status"] = output });
+        }
+
+        private static string? SolutionDirectory(DTE2 dte)
+        {
+            try
+            {
+                string? sln = dte.Solution?.FullName;
+                return string.IsNullOrEmpty(sln) ? null : Path.GetDirectoryName(sln);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static (int exitCode, string output) RunProcess(string fileName, string arguments, string workingDirectory)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(fileName, arguments)
+            {
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            using (var process = System.Diagnostics.Process.Start(psi))
+            {
+                if (process == null) return (-1, "failed to start process");
+
+                string stdout = process.StandardOutput.ReadToEnd();
+                string stderr = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+
+                var combined = new StringBuilder(stdout);
+                if (stderr.Length > 0) combined.Append(stderr);
+                return (process.ExitCode, combined.ToString());
+            }
+        }
+
+        private static string Tail(string value, int maxChars)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length <= maxChars) return value;
+            return "...(truncated)...\n" + value.Substring(value.Length - maxChars);
         }
 
         // --- debugger ---

@@ -73,6 +73,56 @@ public sealed class BridgeTools
         CancellationToken ct)
         => ForwardAsync("findSymbols", new JsonObject { ["query"] = query }, ct);
 
+    [McpServerTool(Name = "findReferences")]
+    [Description("Find all references to the symbol at a given file, line and column, using Roslyn.")]
+    public Task<string> FindReferences(
+        [Description("Absolute path of the source file.")] string file,
+        [Description("1-based line of the symbol.")] int line,
+        [Description("1-based column of the symbol.")] int column,
+        CancellationToken ct)
+        => ForwardAsync("findReferences", new JsonObject { ["file"] = file, ["line"] = line, ["column"] = column }, ct);
+
+    // --- tests / version control ---
+
+    [McpServerTool(Name = "runTests")]
+    [Description("Run 'dotnet test' for the solution and return the result. Optionally pass a test filter expression.")]
+    public Task<string> RunTests(
+        [Description("Optional test filter (dotnet --filter syntax); omit to run all tests.")] string? filter,
+        CancellationToken ct)
+        => ForwardAsync("runTests", new JsonObject { ["filter"] = filter }, ct);
+
+    [McpServerTool(Name = "gitStatus")]
+    [Description("Get the working tree status of the solution's git repository (porcelain).")]
+    public Task<string> GitStatus(CancellationToken ct)
+        => ForwardAsync("gitStatus", null, ct);
+
+    // --- debugger depth ---
+
+    [McpServerTool(Name = "getCallStack")]
+    [Description("Get the current call stack while stopped in the debugger (functions and languages).")]
+    public Task<string> GetCallStack(CancellationToken ct)
+        => ForwardAsync("getCallStack", null, ct);
+
+    [McpServerTool(Name = "evaluateExpression")]
+    [Description("Evaluate an expression in the current debugger context (break mode). Returns value and type.")]
+    public Task<string> EvaluateExpression(
+        [Description("The expression to evaluate, e.g. a variable name.")] string expression,
+        CancellationToken ct)
+        => ForwardAsync("evaluateExpression", new JsonObject { ["expression"] = expression }, ct);
+
+    [McpServerTool(Name = "listBreakpoints")]
+    [Description("List the current breakpoints (file, line, enabled, condition).")]
+    public Task<string> ListBreakpoints(CancellationToken ct)
+        => ForwardAsync("listBreakpoints", null, ct);
+
+    [McpServerTool(Name = "removeBreakpoint")]
+    [Description("Remove the breakpoint at a file and line.")]
+    public Task<string> RemoveBreakpoint(
+        [Description("Absolute path of the source file.")] string file,
+        [Description("1-based line of the breakpoint to remove.")] int line,
+        CancellationToken ct)
+        => ForwardAsync("removeBreakpoint", new JsonObject { ["file"] = file, ["line"] = line }, ct);
+
     // --- navigation / editor state ---
 
     [McpServerTool(Name = "openFile")]
