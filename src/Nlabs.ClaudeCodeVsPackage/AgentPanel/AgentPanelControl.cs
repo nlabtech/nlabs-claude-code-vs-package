@@ -124,13 +124,19 @@ internal sealed class AgentPanelControl : UserControl
             ScrollToEnd();
         };
 
+        // Build each section once - these add fields (input, status, combos) as children, so a second
+        // call would try to re-parent the same element and throw.
+        UIElement header = BuildHeader();
+        UIElement settingsRow = BuildSettingsRow();
+        UIElement composer = BuildComposer();
+        DockPanel.SetDock(header, Dock.Top);
+        DockPanel.SetDock(settingsRow, Dock.Top);
+        DockPanel.SetDock(composer, Dock.Bottom);
+
         var root = new DockPanel { LastChildFill = true };
-        DockPanel.SetDock(BuildHeader(), Dock.Top);
-        DockPanel.SetDock(BuildSettingsRow(), Dock.Top);
-        DockPanel.SetDock(BuildComposer(), Dock.Bottom);
-        root.Children.Add(BuildHeader());
-        root.Children.Add(BuildSettingsRow());
-        root.Children.Add(BuildComposer());
+        root.Children.Add(header);
+        root.Children.Add(settingsRow);
+        root.Children.Add(composer);
         root.Children.Add(_scroller);
         Content = root;
     }
