@@ -22,6 +22,13 @@ public enum CliEventKind
     Unknown,
 }
 
+/// <summary>One item of the agent's to-do list, from a TodoWrite tool call.</summary>
+public sealed class TodoItem
+{
+    public string Content { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty; // pending | in_progress | completed
+}
+
 /// <summary>One parsed event from the CLI's stream-json output.</summary>
 public sealed class CliEvent
 {
@@ -32,6 +39,9 @@ public sealed class CliEvent
     public double? TotalCostUsd { get; set; }
     public bool IsError { get; set; }
     public string Raw { get; set; } = string.Empty;
+
+    /// <summary>The agent's to-do list when this assistant turn wrote one; null otherwise.</summary>
+    public System.Collections.Generic.IReadOnlyList<TodoItem>? Todos { get; set; }
 }
 
 /// <summary>
@@ -96,10 +106,12 @@ public static class CliStreamProtocol
                 };
 
             case "assistant":
+                var assistantContent = obj["message"]?["content"] as JArray;
                 return new CliEvent
                 {
                     Kind = CliEventKind.Assistant,
-                    Text = JoinTextBlocks(obj["message"]?["content"] as JArray),
+                    Text = JoinTextBlocks(assistantContent),
+                    Todos = ExtractTodos(assistantContent),
                     SessionId = (string?)obj["session_id"],
                     Raw = line,
                 };
@@ -128,6 +140,29 @@ public static class CliStreamProtocol
             default:
                 return new CliEvent { Kind = CliEventKind.Unknown, Raw = line };
         }
+    }
+
+    // Pulls the to-do list out of a TodoWrite tool call, if this assistant turn made one.
+    private static System.Collections.Generic.IReadOnlyList<TodoItem>? ExtractTodos(JArray? content)
+    {
+        if (content == null) return null;
+        foreach (var block in content)
+        {
+            if ((string?)block["type"] != "tool_use" || (string?)block["name"] != "TodoWrite") continue;
+            if (!(block["input"]?["todos"] is JArray todos)) continue;
+
+            var list = new System.Collections.Generic.List<TodoItem>();
+            foreach (var t in todos)
+            {
+                list.Add(new TodoItem
+                {
+                    Content = (string?)t["content"] ?? string.Empty,
+                    Status = (string?)t["status"] ?? string.Empty,
+                });
+            }
+            return list;
+        }
+        return null;
     }
 
     private static string JoinTextBlocks(JArray? content)

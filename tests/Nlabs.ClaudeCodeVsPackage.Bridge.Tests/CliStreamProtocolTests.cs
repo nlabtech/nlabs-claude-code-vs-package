@@ -40,6 +40,28 @@ public class CliStreamProtocolTests
     }
 
     [Fact]
+    public void Parse_assistant_extracts_a_todo_list_from_a_TodoWrite_call()
+    {
+        var e = CliStreamProtocol.Parse(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"TodoWrite\",\"input\":{\"todos\":[{\"content\":\"read tests\",\"status\":\"completed\"},{\"content\":\"fix bug\",\"status\":\"in_progress\"}]}}]}}");
+
+        Assert.NotNull(e.Todos);
+        Assert.Equal(2, e.Todos!.Count);
+        Assert.Equal("read tests", e.Todos[0].Content);
+        Assert.Equal("completed", e.Todos[0].Status);
+        Assert.Equal("in_progress", e.Todos[1].Status);
+    }
+
+    [Fact]
+    public void Parse_assistant_without_todos_leaves_the_list_null()
+    {
+        var e = CliStreamProtocol.Parse(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}");
+
+        Assert.Null(e.Todos);
+    }
+
+    [Fact]
     public void Parse_stream_event_extracts_the_delta_text()
     {
         var e = CliStreamProtocol.Parse(

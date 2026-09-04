@@ -57,6 +57,8 @@ internal sealed class AgentPanelControl : UserControl
     private readonly ComboBox _convCombo;
     private readonly ComboBox _langCombo;
     private readonly Border _stopButton;
+    private readonly Border _tasksBox;
+    private readonly StackPanel _tasksList;
 
     // UI strings by language; every visible label re-reads these when the language changes.
     private static readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, string>> Strings =
@@ -70,7 +72,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["defaultModel"] = "Default model", ["askEach"] = "Ask each time", ["acceptEdits"] = "Accept edits",
                 ["hello"] = "Type a message and press Enter.", ["working"] = "Claude is working...",
                 ["newChat"] = "New chat - type a message to begin.",
-                ["switched"] = "Switched - your next message resumes this chat.",
+                ["switched"] = "Switched - your next message resumes this chat.", ["tasks"] = "Tasks",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -80,7 +82,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["defaultModel"] = "Varsayilan model", ["askEach"] = "Her seferinde sor", ["acceptEdits"] = "Duzenlemeleri kabul et",
                 ["hello"] = "Bir mesaj yaz, Enter'a bas.", ["working"] = "Claude calisiyor...",
                 ["newChat"] = "Yeni sohbet - baslamak icin bir mesaj yaz.",
-                ["switched"] = "Gecildi - sonraki mesajin bu sohbeti surdurur.",
+                ["switched"] = "Gecildi - sonraki mesajin bu sohbeti surdurur.", ["tasks"] = "Gorevler",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -169,6 +171,26 @@ internal sealed class AgentPanelControl : UserControl
         _langCombo.SelectionChanged += (_, __) => OnLanguageChanged();
 
         _stopButton = MakeGhostButton("stop", () => _ = StopAsync());
+
+        // Live to-do strip - hidden until the agent writes a task list, updated as it progresses.
+        _tasksList = new StackPanel();
+        var tasksHeader = new TextBlock { FontSize = 11, FontWeight = FontWeights.SemiBold, Opacity = 0.7, Margin = new Thickness(0, 0, 0, 5) };
+        tasksHeader.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        Bind(() => tasksHeader.Text = Loc("tasks"));
+        var tasksInner = new StackPanel();
+        tasksInner.Children.Add(tasksHeader);
+        tasksInner.Children.Add(_tasksList);
+        _tasksBox = new Border
+        {
+            Child = tasksInner,
+            Margin = new Thickness(12, 4, 12, 0),
+            Padding = new Thickness(10, 8, 10, 8),
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1),
+            Background = AssistantFill,
+            Visibility = Visibility.Collapsed,
+        };
+        _tasksBox.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
         _stopButton.Visibility = Visibility.Collapsed; // shown only while a turn is running
 
         // Streaming deltas arrive far faster than a full re-render can keep up, so they only mark the
@@ -195,12 +217,14 @@ internal sealed class AgentPanelControl : UserControl
         DockPanel.SetDock(header, Dock.Top);
         DockPanel.SetDock(chatRow, Dock.Top);
         DockPanel.SetDock(settingsRow, Dock.Top);
+        DockPanel.SetDock(_tasksBox, Dock.Top);
         DockPanel.SetDock(composer, Dock.Bottom);
 
         var root = new DockPanel { LastChildFill = true };
         root.Children.Add(header);
         root.Children.Add(chatRow);
         root.Children.Add(settingsRow);
+        root.Children.Add(_tasksBox);
         root.Children.Add(composer);
         root.Children.Add(_scroller);
         Content = root;
@@ -396,6 +420,12 @@ internal sealed class AgentPanelControl : UserControl
         // Ignore late events from a session that has been superseded (Stop, New, or a switch),
         // so a dying session cannot mutate the conversation that replaced it.
         if (!ReferenceEquals(sender, _session)) return;
+
+        if (e.Todos != null)
+        {
+            var todos = e.Todos;
+            OnUi(() => RenderTasks(todos));
+        }
 
         switch (e.Kind)
         {
@@ -665,6 +695,49 @@ internal sealed class AgentPanelControl : UserControl
         _ = RunTurnAsync(next);
     }
 
+    // Paints the agent's live to-do list: a dot per item coloured by state, the current one in bold.
+    private void RenderTasks(System.Collections.Generic.IReadOnlyList<TodoItem> todos)
+    {
+        _tasksList.Children.Clear();
+        if (todos.Count == 0) { _tasksBox.Visibility = Visibility.Collapsed; return; }
+
+        foreach (TodoItem t in todos)
+        {
+            bool done = t.Status == "completed";
+            bool active = t.Status == "in_progress";
+
+            var dot = new TextBlock
+            {
+                Text = done ? "✓  " : active ? "›  " : "○  ",
+                FontWeight = active ? FontWeights.Bold : FontWeights.Normal,
+            };
+            if (done || active) dot.Foreground = Accent;
+            else dot.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+            var text = new TextBlock
+            {
+                Text = t.Content,
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = done ? 0.55 : 1.0,
+                FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal,
+                TextDecorations = done ? TextDecorations.Strikethrough : null,
+            };
+            text.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+            row.Children.Add(dot);
+            row.Children.Add(text);
+            _tasksList.Children.Add(row);
+        }
+        _tasksBox.Visibility = Visibility.Visible;
+    }
+
+    private void ClearTasks()
+    {
+        _tasksList.Children.Clear();
+        _tasksBox.Visibility = Visibility.Collapsed;
+    }
+
     private void ScrollToEnd() => _scroller.ScrollToEnd();
 
     // CLI events arrive on the pump thread; this marshals each update to the panel's own WPF
@@ -751,6 +824,7 @@ internal sealed class AgentPanelControl : UserControl
         if (c.Item != null) _convCombo.SelectedItem = c.Item;
         _switching = false;
 
+        ClearTasks();
         RebuildMessages();
         SetBusy(false);
         _status.Text = c.CliSessionId == null ? Loc("newChat") : Loc("switched");
