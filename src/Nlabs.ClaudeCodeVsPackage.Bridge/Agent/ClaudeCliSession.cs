@@ -1,0 +1,145 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Nlabs.ClaudeCodeVsPackage.Bridge.Agent
+{
+    /// <summary>Options for one headless Claude Code session.</summary>
+    public sealed class ClaudeCliOptions
+    {
+        /// <summary>Model alias, e.g. "opus" or a full model id. Null keeps the CLI default.</summary>
+        public string? Model { get; set; }
+        /// <summary>Permission mode, e.g. "acceptEdits". Null keeps the CLI default.</summary>
+        public string? PermissionMode { get; set; }
+        /// <summary>Extra system-prompt text appended to Claude's own.</summary>
+        public string? AppendSystemPrompt { get; set; }
+        /// <summary>Continue the most recent session in this directory.</summary>
+        public bool Continue { get; set; }
+        /// <summary>Resume a specific session id.</summary>
+        public string? Resume { get; set; }
+        /// <summary>Emit partial-message deltas so text streams as it is produced.</summary>
+        public bool IncludePartialMessages { get; set; } = true;
+    }
+
+    /// <summary>
+    /// Drives Claude Code headlessly for the agentic panel: it launches
+    /// <c>claude -p --input-format stream-json --output-format stream-json</c>, writes each user
+    /// turn to stdin and turns every stdout line into a <see cref="CliEvent"/> the panel renders.
+    ///
+    /// It uses the developer's own Claude subscription through the CLI - the extension never holds
+    /// an API key, and nothing about the machine or account is written to a log here. The two parts
+    /// with real logic - building the argument line and pumping the output stream - take no process,
+    /// so they are unit-tested; <see cref="Start"/> and <see cref="SendAsync"/> are thin wrappers
+    /// over a real process.
+    /// </summary>
+    public sealed class ClaudeCliSession : IDisposable
+    {
+        private Process? _process;
+        private TextWriter? _stdin;
+        private bool _disposed;
+
+        /// <summary>Raised for every parsed line of the CLI's output.</summary>
+        public event EventHandler<CliEvent>? Event;
+
+        /// <summary>Raised when the CLI process exits.</summary>
+        public event EventHandler? Exited;
+
+        /// <summary>Launches the CLI in <paramref name="workingDirectory"/> with the given options.</summary>
+        public void Start(string workingDirectory, ClaudeCliOptions options)
+        {
+            var psi = new ProcessStartInfo("claude", BuildArguments(options))
+            {
+                WorkingDirectory = workingDirectory ?? string.Empty,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = new UTF8Encoding(false),
+            };
+
+            _process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            _process.Exited += (_, __) => Exited?.Invoke(this, EventArgs.Empty);
+            _process.Start();
+            _stdin = _process.StandardInput;
+
+            Process process = _process;
+            _ = Task.Run(() => Pump(process.StandardOutput));
+        }
+
+        /// <summary>Sends one user turn to the running session.</summary>
+        public async Task SendAsync(string text)
+        {
+            TextWriter? stdin = _stdin;
+            if (stdin == null) return;
+            await stdin.WriteLineAsync(CliStreamProtocol.UserMessage(text)).ConfigureAwait(false);
+            await stdin.FlushAsync().ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Reads the output stream line by line and raises <see cref="Event"/> for each. Exposed so a
+        /// test can drive it with any reader; production passes the process's standard output.
+        /// </summary>
+        public void Pump(TextReader reader)
+        {
+            if (reader == null) return;
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                Event?.Invoke(this, CliStreamProtocol.Parse(line));
+            }
+        }
+
+        /// <summary>Builds the CLI argument line for the given options.</summary>
+        public static string BuildArguments(ClaudeCliOptions options)
+        {
+            var sb = new StringBuilder(
+                "-p --input-format stream-json --output-format stream-json --verbose");
+
+            if (options == null) return sb.ToString();
+
+            if (options.IncludePartialMessages) sb.Append(" --include-partial-messages");
+            if (!string.IsNullOrEmpty(options.Model)) sb.Append(" --model ").Append(options.Model);
+            if (!string.IsNullOrEmpty(options.PermissionMode)) sb.Append(" --permission-mode ").Append(options.PermissionMode);
+            if (options.Continue) sb.Append(" --continue");
+            if (!string.IsNullOrEmpty(options.Resume)) sb.Append(" --resume ").Append(options.Resume);
+            if (!string.IsNullOrEmpty(options.AppendSystemPrompt))
+            {
+                sb.Append(" --append-system-prompt ").Append(Quote(options.AppendSystemPrompt!));
+            }
+
+            return sb.ToString();
+        }
+
+        // Wraps a value in double quotes, escaping embedded quotes and backslashes for the Windows
+        // argument parser. Used only for free-text options (the system prompt).
+        private static string Quote(string value)
+        {
+            var sb = new StringBuilder("\"");
+            foreach (char c in value)
+            {
+                if (c == '"') sb.Append("\\\"");
+                else if (c == '\\') sb.Append("\\\\");
+                else if (c == '\n' || c == '\r') sb.Append(' ');
+                else sb.Append(c);
+            }
+            sb.Append('"');
+            return sb.ToString();
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            try { _stdin?.Dispose(); } catch { }
+            try
+            {
+                if (_process != null && !_process.HasExited) _process.Kill();
+            }
+            catch { /* already gone */ }
+            try { _process?.Dispose(); } catch { }
+        }
+    }
+}
