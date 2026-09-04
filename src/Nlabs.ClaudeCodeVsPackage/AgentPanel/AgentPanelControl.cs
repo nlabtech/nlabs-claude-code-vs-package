@@ -115,6 +115,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["wantsToRun"] = "wants to run", ["allowed"] = "Allowed", ["denied"] = "Denied",
                 ["edit"] = "Edit", ["accent"] = "Accent", ["attachHint"] = "Attach an image",
                 ["tokens"] = "tokens", ["defaultEffort"] = "Effort: default",
+                ["pickFolder"] = "Pick folder", ["folderSet"] = "Folder set - your next message starts here.",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -130,6 +131,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["wantsToRun"] = "calistirmak istiyor", ["allowed"] = "Izin verildi", ["denied"] = "Reddedildi",
                 ["edit"] = "Duzenle", ["accent"] = "Vurgu", ["attachHint"] = "Gorsel ekle",
                 ["tokens"] = "token", ["defaultEffort"] = "Efor: varsayilan",
+                ["pickFolder"] = "Klasor sec", ["folderSet"] = "Klasor secildi - sonraki mesajin burada baslar.",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -159,6 +161,8 @@ internal sealed class AgentPanelControl : UserControl
     private readonly PanelPreferencesStore _prefs = new PanelPreferencesStore();
     private bool _prefsLoaded; // suppresses saves while the constructor applies the stored choices
     private string _workspaceKey = string.Empty;
+    private string? _workingFolder;    // an explicit working folder chosen when no solution is open
+    private TextBlock? _folderLabel;
 
     public AgentPanelControl()
     {
@@ -308,7 +312,11 @@ internal sealed class AgentPanelControl : UserControl
         // call would try to re-parent the same element and throw.
         UIElement header = BuildHeader();
         UIElement chatRow = BuildChatRow();
+        // BuildComposer reads the current folder (a solution-service call) while wiring the status bar;
+        // the tool window always builds on the UI thread, so this is safe.
+#pragma warning disable VSTHRD010
         UIElement composer = BuildComposer();
+#pragma warning restore VSTHRD010
         DockPanel.SetDock(header, Dock.Top);
         DockPanel.SetDock(chatRow, Dock.Top);
         DockPanel.SetDock(_tasksBox, Dock.Top);
@@ -448,11 +456,18 @@ internal sealed class AgentPanelControl : UserControl
         inputBorder.Drop += OnInputDrop;
         _inputBorder = inputBorder;
 
-        var statusBar = new Border
-        {
-            Padding = new Thickness(4, 6, 4, 0),
-            Child = _status,
-        };
+        // The bottom status bar: quiet mini-buttons on the left (the working folder for now; more join
+        // it as those features land), the status text and running cost on the right.
+        var folderButton = BuildStatusButton(PickFolder, out _folderLabel);
+        // The panel is built on the UI thread; the folder caption reads the solution service safely here.
+#pragma warning disable VSTHRD010
+        Bind(() => _folderLabel!.Text = FolderCaption());
+#pragma warning restore VSTHRD010
+
+        var statusBar = new DockPanel { Margin = new Thickness(4, 7, 4, 0), LastChildFill = true };
+        DockPanel.SetDock(folderButton, Dock.Left);
+        statusBar.Children.Add(folderButton);
+        statusBar.Children.Add(_status);
 
         var composer = new StackPanel { Margin = new Thickness(12, 6, 12, 12) };
         composer.Children.Add(_workingStrip);
@@ -586,7 +601,7 @@ internal sealed class AgentPanelControl : UserControl
             options.ApprovalPort = _approval.Port;
             options.ApprovalToken = _approval.Token;
         }
-        _session.Start(SolutionDirectory(), options);
+        _session.Start(WorkingDirectory(), options);
         _status.Text = "Connected.";
     }
 
@@ -1587,6 +1602,62 @@ internal sealed class AgentPanelControl : UserControl
         button.MouseLeave += (_, __) => button.Opacity = 1.0;
         button.MouseLeftButtonUp += (_, __) => onClick();
         return button;
+    }
+
+    // A quiet status-bar button: muted text that brightens on hover. The label is returned so the
+    // caller can keep its text current (the folder name, a status, a count).
+    private Border BuildStatusButton(Action onClick, out TextBlock label)
+    {
+        label = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.65 };
+        label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        var button = new Border
+        {
+            Child = label,
+            Cursor = Cursors.Hand,
+            Padding = new Thickness(0, 0, 10, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        button.MouseEnter += (_, __) => button.Opacity = 0.55;
+        button.MouseLeave += (_, __) => button.Opacity = 1.0;
+        button.MouseLeftButtonUp += (_, __) => onClick();
+        return button;
+    }
+
+    // The working directory Claude runs in: an explicitly chosen folder if set, else the open
+    // solution's directory (empty when neither - the CLI then runs in its default location).
+    private string WorkingDirectory()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (!string.IsNullOrEmpty(_workingFolder) && Directory.Exists(_workingFolder)) return _workingFolder!;
+        return SolutionDirectory();
+    }
+
+    private string FolderCaption()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        string dir = WorkingDirectory();
+        if (string.IsNullOrEmpty(dir)) return "📁 " + Loc("pickFolder");
+        return "📁 " + (Path.GetFileName(dir.TrimEnd('\\', '/')) ?? dir);
+    }
+
+    // Lets the developer point the session at a folder - the main path when no solution is open. The
+    // running session is dropped so the next turn starts in the new directory.
+    private void PickFolder()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        using (var dlg = new System.Windows.Forms.FolderBrowserDialog())
+        {
+            string current = WorkingDirectory();
+            if (!string.IsNullOrEmpty(current)) dlg.SelectedPath = current;
+            if (dlg.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+
+            _workingFolder = dlg.SelectedPath;
+            _workspaceKey = _workingFolder;
+            _session?.Dispose();
+            _session = null;
+            if (_folderLabel != null) _folderLabel.Text = FolderCaption();
+            _status.Text = Loc("folderSet");
+        }
     }
 
     // --- Attachments ---------------------------------------------------------------------------

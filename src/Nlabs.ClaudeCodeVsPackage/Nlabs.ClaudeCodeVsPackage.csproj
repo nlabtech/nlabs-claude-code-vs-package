@@ -97,6 +97,9 @@
        System.Design.dll - a framework assembly the SDK does not reference by default. -->
   <ItemGroup>
     <Reference Include="System.Design" />
+    <!-- FolderBrowserDialog for the "pick working folder" action. A framework assembly present in
+         devenv's runtime, so it is referenced but never bundled into the VSIX. -->
+    <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 
   <ItemGroup>
