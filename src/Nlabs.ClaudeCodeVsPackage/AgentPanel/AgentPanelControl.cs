@@ -73,6 +73,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["hello"] = "Type a message and press Enter.", ["working"] = "Claude is working...",
                 ["newChat"] = "New chat - type a message to begin.",
                 ["switched"] = "Switched - your next message resumes this chat.", ["tasks"] = "Tasks",
+                ["copy"] = "Copy", ["copied"] = "Copied", ["session"] = "session",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -83,6 +84,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["hello"] = "Bir mesaj yaz, Enter'a bas.", ["working"] = "Claude calisiyor...",
                 ["newChat"] = "Yeni sohbet - baslamak icin bir mesaj yaz.",
                 ["switched"] = "Gecildi - sonraki mesajin bu sohbeti surdurur.", ["tasks"] = "Gorevler",
+                ["copy"] = "Kopyala", ["copied"] = "Kopyalandi", ["session"] = "oturum",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -97,6 +99,7 @@ internal sealed class AgentPanelControl : UserControl
     private volatile bool _renderPending;
     private bool _busy;
     private bool _switching; // guards the conversation combo while we rebuild it
+    private double _sessionCost; // running total across the panel's turns
 
     public AgentPanelControl()
     {
@@ -463,9 +466,10 @@ internal sealed class AgentPanelControl : UserControl
                     SetBusy(false);
                     if (e.TotalCostUsd.HasValue)
                     {
+                        _sessionCost += e.TotalCostUsd.Value;
                         _status.Text = e.IsError
                             ? "Turn failed."
-                            : string.Format("Ready - last turn ${0:0.0000}.", e.TotalCostUsd.Value);
+                            : string.Format("${0:0.0000} · {1} ${2:0.0000}", e.TotalCostUsd.Value, Loc("session"), _sessionCost);
                     }
                     DrainQueue();
                 });
@@ -578,18 +582,26 @@ internal sealed class AgentPanelControl : UserControl
     private UIElement BuildCodeBlock(MarkdownBlock block)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 6, 0, 4) };
+
+        // Language caption on the left, a Copy affordance on the right.
+        var copy = new TextBlock { Text = Loc("copy"), FontSize = 10.5, Opacity = 0.6, Cursor = Cursors.Hand };
+        copy.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        copy.MouseLeftButtonUp += (_, __) =>
+        {
+            try { Clipboard.SetText(block.Text); copy.Text = Loc("copied"); }
+            catch { /* clipboard busy - ignore */ }
+        };
+
+        var topRow = new DockPanel { Margin = new Thickness(2, 0, 0, 3) };
+        DockPanel.SetDock(copy, Dock.Right);
+        topRow.Children.Add(copy);
         if (!string.IsNullOrEmpty(block.Language))
         {
-            var caption = new TextBlock
-            {
-                Text = block.Language,
-                FontSize = 10.5,
-                Opacity = 0.55,
-                Margin = new Thickness(2, 0, 0, 3),
-            };
+            var caption = new TextBlock { Text = block.Language, FontSize = 10.5, Opacity = 0.55 };
             caption.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-            panel.Children.Add(caption);
+            topRow.Children.Add(caption);
         }
+        panel.Children.Add(topRow);
 
         var code = new TextBox
         {
