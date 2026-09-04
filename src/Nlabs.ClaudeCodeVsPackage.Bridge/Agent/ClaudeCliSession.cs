@@ -102,6 +102,18 @@ public sealed class ClaudeCliSession : IDisposable
     }
 
     /// <summary>
+    /// Asks the running turn to stop. The CLI ends the turn with a result event, so the session
+    /// stays alive for the next message. Best-effort: if the session is gone there is nothing to do.
+    /// </summary>
+    public async Task InterruptAsync()
+    {
+        TextWriter? stdin = _stdin;
+        if (stdin == null) return;
+        await stdin.WriteLineAsync(CliStreamProtocol.ControlInterrupt(Guid.NewGuid().ToString())).ConfigureAwait(false);
+        await stdin.FlushAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Reads the output stream line by line and raises <see cref="Event"/> for each. Exposed so a
     /// test can drive it with any reader; production passes the process's standard output.
     /// </summary>

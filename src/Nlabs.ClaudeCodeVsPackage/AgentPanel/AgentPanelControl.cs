@@ -33,6 +33,7 @@ internal sealed class AgentPanelControl : UserControl
     private readonly TextBlock _status;
     private readonly ComboBox _modelCombo;
     private readonly ComboBox _modeCombo;
+    private readonly Button _stopButton;
 
     private readonly System.Collections.Generic.Queue<string> _queue = new System.Collections.Generic.Queue<string>();
     private ClaudeCliSession? _session;
@@ -85,6 +86,15 @@ internal sealed class AgentPanelControl : UserControl
         };
         newButton.Click += (_, __) => NewSession();
 
+        _stopButton = new Button
+        {
+            Content = "Stop",
+            Padding = new Thickness(8, 2, 8, 2),
+            Margin = new Thickness(10, 0, 0, 0),
+            Visibility = Visibility.Collapsed, // shown only while a turn is running
+        };
+        _stopButton.Click += (_, __) => _ = StopAsync();
+
         var toolbar = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -93,6 +103,7 @@ internal sealed class AgentPanelControl : UserControl
         toolbar.Children.Add(newButton);
         toolbar.Children.Add(LabelFor("Model", _modelCombo));
         toolbar.Children.Add(LabelFor("Permission", _modeCombo));
+        toolbar.Children.Add(_stopButton);
 
         var root = new DockPanel();
         DockPanel.SetDock(toolbar, Dock.Top);
@@ -370,13 +381,27 @@ internal sealed class AgentPanelControl : UserControl
         return tb;
     }
 
-    // Shows turn progress. The input stays live during a turn (messages typed then are queued), so
-    // the only state here is the status line and, when idle, returning focus to the input.
+    // Shows turn progress. The input stays live during a turn (messages typed then are queued); the
+    // Stop button appears only while a turn runs.
     private void SetBusy(bool busy)
     {
         _busy = busy;
+        _stopButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         if (busy) { _status.Text = "Claude is working..."; }
         else { _input.Focus(); }
+    }
+
+    // Asks the running turn to stop. Queued messages are dropped (a manual stop means "stop", not
+    // "run the next one"); the session stays alive so the conversation can continue with a new
+    // message. The CLI ends the turn with a result event, which returns the panel to idle.
+    private async System.Threading.Tasks.Task StopAsync()
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        if (!_busy || _session == null) return;
+        _queue.Clear();
+        _status.Text = "Stopping...";
+        try { await _session.InterruptAsync(); }
+        catch { /* the session is already gone; the idle transition still happens below */ }
     }
 
     // After a turn ends, send the next queued message (if any) as its own turn. Called from the UI

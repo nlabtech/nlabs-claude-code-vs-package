@@ -65,6 +65,22 @@ public static class CliStreamProtocol
         return message.ToString(Formatting.None);
     }
 
+    /// <summary>
+    /// The stdin JSONL control line that asks the running turn to stop. The CLI answers with a
+    /// control_response and ends the turn with a result event, so the panel returns to idle the
+    /// same way a finished turn does - without killing the session, so the conversation continues.
+    /// </summary>
+    public static string ControlInterrupt(string requestId)
+    {
+        var message = new JObject
+        {
+            ["type"] = "control_request",
+            ["request_id"] = requestId ?? string.Empty,
+            ["request"] = new JObject { ["subtype"] = "interrupt" },
+        };
+        return message.ToString(Formatting.None);
+    }
+
     /// <summary>Parses one stdout line into a <see cref="CliEvent"/>.</summary>
     public static CliEvent Parse(string line)
     {
