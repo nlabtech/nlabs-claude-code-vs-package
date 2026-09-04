@@ -74,6 +74,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["newChat"] = "New chat - type a message to begin.",
                 ["switched"] = "Switched - your next message resumes this chat.", ["tasks"] = "Tasks",
                 ["copy"] = "Copy", ["copied"] = "Copied", ["session"] = "session",
+                ["allow"] = "Allow", ["deny"] = "Deny", ["always"] = "Always allow",
+                ["wantsToRun"] = "wants to run", ["allowed"] = "Allowed", ["denied"] = "Denied",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -85,6 +87,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["newChat"] = "Yeni sohbet - baslamak icin bir mesaj yaz.",
                 ["switched"] = "Gecildi - sonraki mesajin bu sohbeti surdurur.", ["tasks"] = "Gorevler",
                 ["copy"] = "Kopyala", ["copied"] = "Kopyalandi", ["session"] = "oturum",
+                ["allow"] = "Izin ver", ["deny"] = "Reddet", ["always"] = "Hep izin ver",
+                ["wantsToRun"] = "calistirmak istiyor", ["allowed"] = "Izin verildi", ["denied"] = "Reddedildi",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -100,6 +104,9 @@ internal sealed class AgentPanelControl : UserControl
     private bool _busy;
     private bool _switching; // guards the conversation combo while we rebuild it
     private double _sessionCost; // running total across the panel's turns
+    private ApprovalService? _approval;
+    private string? _hookScriptPath;
+    private readonly System.Collections.Generic.HashSet<string> _alwaysAllow = new System.Collections.Generic.HashSet<string>();
 
     public AgentPanelControl()
     {
@@ -399,6 +406,7 @@ internal sealed class AgentPanelControl : UserControl
         ThreadHelper.ThrowIfNotOnUIThread();
         if (_session != null) return;
 
+        EnsureApproval();
         var session = new ClaudeCliSession();
         session.Event += OnCliEvent;
         // Only react to an exit if this is still the live session - a manual Stop nulls the field
@@ -413,6 +421,11 @@ internal sealed class AgentPanelControl : UserControl
         ClaudeCliOptions options = CurrentOptions();
         options.Resume = _current.CliSessionId; // continue this chat if it already has a session
         options.SettingsPath = WriteSafetySettings();
+        if (_approval != null)
+        {
+            options.ApprovalPort = _approval.Port;
+            options.ApprovalToken = _approval.Token;
+        }
         _session.Start(SolutionDirectory(), options);
         _status.Text = "Connected.";
     }
@@ -875,22 +888,151 @@ internal sealed class AgentPanelControl : UserControl
         }
     }
 
-    // Writes the always-on permission floor (deny destructive shell + secret reads) to a temp
-    // settings file that the session passes with --settings. If it cannot be written, the session
-    // still starts - just without the extra floor - rather than blocking the developer.
-    private static string? WriteSafetySettings()
+    // Writes the deny floor plus, when the approval endpoint is up, the PreToolUse hook that routes
+    // each tool call to an approval card. If it cannot be written the session still starts.
+    private string? WriteSafetySettings()
     {
         try
         {
+            string? hookCommand = (_approval != null && _hookScriptPath != null)
+                ? "powershell -NoProfile -ExecutionPolicy Bypass -File \"" + _hookScriptPath + "\""
+                : null;
             string path = System.IO.Path.Combine(
                 System.IO.Path.GetTempPath(), "nlabs_claude_settings_" + Guid.NewGuid().ToString("n") + ".json");
-            System.IO.File.WriteAllText(path, PermissionPolicy.BuildSettingsJson());
+            System.IO.File.WriteAllText(path, PermissionPolicy.BuildSettingsJson(null, hookCommand));
             return path;
         }
         catch
         {
             return null;
         }
+    }
+
+    // Brings up the approval endpoint and the little hook script that talks to it. Best-effort: if it
+    // fails, sessions run without interactive cards (the deny floor still applies).
+    private void EnsureApproval()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (_approval != null) return;
+        try
+        {
+            var svc = new ApprovalService();
+            svc.Start();
+            svc.Requested += OnApprovalRequested;
+            _hookScriptPath = WriteHookScript();
+            _approval = _hookScriptPath != null ? svc : null;
+            if (_approval == null) svc.Dispose();
+        }
+        catch
+        {
+            _approval = null;
+            _hookScriptPath = null;
+        }
+    }
+
+    // The PreToolUse hook: reads the tool call on stdin, asks the panel over the loopback endpoint,
+    // and writes the decision back. A tiny PowerShell relay so nothing has to be bundled.
+    private static string? WriteHookScript()
+    {
+        try
+        {
+            string path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(), "nlabs_claude_hook_" + Guid.NewGuid().ToString("n") + ".ps1");
+            const string script =
+                "$ErrorActionPreference = 'Stop'\r\n" +
+                "try {\r\n" +
+                "  $body = [Console]::In.ReadToEnd()\r\n" +
+                "  $u = \"http://127.0.0.1:$($env:NLABS_APPROVAL_PORT)/permission\"\r\n" +
+                "  $h = @{ 'x-nlabs-approval' = $env:NLABS_APPROVAL_TOKEN }\r\n" +
+                "  $r = Invoke-WebRequest -Uri $u -Method Post -Body $body -ContentType 'application/json' -Headers $h -UseBasicParsing -TimeoutSec 310\r\n" +
+                "  [Console]::Out.Write($r.Content)\r\n" +
+                "} catch {\r\n" +
+                "  [Console]::Out.Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Approval bridge unreachable.\"}}')\r\n" +
+                "}\r\n";
+            System.IO.File.WriteAllText(path, script);
+            return path;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // A tool wants to run. Auto-allow if the developer whitelisted it this session; else show a card.
+    private void OnApprovalRequested(object sender, ApprovalRequestedEventArgs e)
+    {
+        string id = e.Id;
+        HookRequest req = e.Request;
+        OnUi(() =>
+        {
+            if (_alwaysAllow.Contains(req.ToolName)) { _approval?.Resolve(id, true); return; }
+            ShowApprovalCard(id, req);
+        });
+    }
+
+    // The approval card: what Claude wants to run, its real parameters, and Allow / Deny / Always.
+    private void ShowApprovalCard(string id, HookRequest req)
+    {
+        var title = new TextBlock { FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
+        title.Inlines.Add(new Run(req.ToolName) { FontWeight = FontWeights.Bold, Foreground = Accent });
+        title.Inlines.Add(new Run(" " + Loc("wantsToRun")));
+        title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var preview = new TextBox
+        {
+            Text = req.InputPreview,
+            IsReadOnly = true,
+            BorderThickness = new Thickness(0),
+            Margin = new Thickness(0, 6, 0, 8),
+            FontFamily = MonoFont,
+            FontSize = 12,
+            Background = Brushes.Transparent,
+            TextWrapping = TextWrapping.NoWrap,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = 160,
+        };
+        preview.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+        var note = new TextBlock { Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center };
+        note.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var inner = new StackPanel();
+        inner.Children.Add(title);
+        inner.Children.Add(preview);
+        inner.Children.Add(buttons);
+
+        var card = new Border
+        {
+            Child = inner,
+            CornerRadius = new CornerRadius(10),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(12, 10, 12, 10),
+            Margin = new Thickness(0, 6, 0, 6),
+            Background = AssistantFill,
+        };
+        card.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+
+        void Decide(bool allow, bool always, string doneKey)
+        {
+            if (always) _alwaysAllow.Add(req.ToolName);
+            _approval?.Resolve(id, allow);
+            buttons.Children.Clear();
+            note.Text = Loc(doneKey);
+            buttons.Children.Add(note);
+        }
+
+        var allowBtn = MakeAccentButton("allow", () => Decide(true, false, "allowed"));
+        allowBtn.Margin = new Thickness(0, 0, 8, 0);
+        var denyBtn = MakeGhostButton("deny", () => Decide(false, false, "denied"));
+        denyBtn.Margin = new Thickness(0, 0, 8, 0);
+        var alwaysBtn = MakeGhostButton("always", () => Decide(true, true, "allowed"));
+        buttons.Children.Add(allowBtn);
+        buttons.Children.Add(denyBtn);
+        buttons.Children.Add(alwaysBtn);
+
+        _messages.Children.Add(card);
+        ScrollToEnd();
     }
 
     private string Loc(string key) =>
@@ -1020,5 +1162,7 @@ internal sealed class AgentPanelControl : UserControl
     {
         _session?.Dispose();
         _session = null;
+        _approval?.Dispose();
+        _approval = null;
     }
 }

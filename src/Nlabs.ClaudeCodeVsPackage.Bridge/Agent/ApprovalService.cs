@@ -1,0 +1,154 @@
+using System;
+using System.Collections.Concurrent;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading.Tasks;
+
+namespace Nlabs.ClaudeCodeVsPackage.Bridge.Agent;
+
+/// <summary>Carries one pending tool approval to the panel.</summary>
+public sealed class ApprovalRequestedEventArgs : EventArgs
+{
+    public string Id { get; }
+    public HookRequest Request { get; }
+    public ApprovalRequestedEventArgs(string id, HookRequest request)
+    {
+        Id = id;
+        Request = request;
+    }
+}
+
+/// <summary>
+/// A loopback endpoint the PreToolUse hook calls to ask the developer before a tool runs. The hook
+/// script POSTs the tool call here and blocks; this raises <see cref="Requested"/> so the panel can
+/// show an approval card, waits for <see cref="Resolve"/>, and answers the hook with an allow/deny
+/// decision. Same posture as the bridge: 127.0.0.1 only, a per-run token, nothing logged.
+/// </summary>
+public sealed class ApprovalService : IDisposable
+{
+    private static readonly TimeSpan Timeout = TimeSpan.FromMinutes(5);
+
+    private readonly HttpListener _listener = new HttpListener();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<(string decision, string reason)>> _pending
+        = new ConcurrentDictionary<string, TaskCompletionSource<(string, string)>>();
+
+    public string Token { get; } = Guid.NewGuid().ToString("n");
+    public int Port { get; private set; }
+
+    /// <summary>Raised when the hook asks about a tool; the panel answers with <see cref="Resolve"/>.</summary>
+    public event EventHandler<ApprovalRequestedEventArgs>? Requested;
+
+    public void Start()
+    {
+        Port = FindFreePort();
+        _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+        _listener.Start();
+        _ = AcceptLoopAsync();
+    }
+
+    /// <summary>Answers a pending request; call from the panel after the developer decides.</summary>
+    public void Resolve(string id, bool allow, string? reason = null)
+    {
+        if (_pending.TryRemove(id, out var tcs))
+        {
+            tcs.TrySetResult((allow ? "allow" : "deny", reason ?? string.Empty));
+        }
+    }
+
+    private async Task AcceptLoopAsync()
+    {
+        while (_listener.IsListening)
+        {
+            HttpListenerContext context;
+            try { context = await _listener.GetContextAsync().ConfigureAwait(false); }
+            catch { break; }
+            _ = HandleAsync(context);
+        }
+    }
+
+    private async Task HandleAsync(HttpListenerContext context)
+    {
+        try
+        {
+            HttpListenerRequest request = context.Request;
+            if (request.Headers["Origin"] != null) { Close(context, 403); return; }
+            if (!request.IsLocal) { Close(context, 403); return; }
+            if (!FixedTimeEquals(request.Headers["x-nlabs-approval"], Token)) { Close(context, 401); return; }
+
+            string body;
+            using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+            {
+                body = await reader.ReadToEndAsync().ConfigureAwait(false);
+            }
+
+            HookRequest hook = HookProtocol.ParseRequest(body);
+            string id = Guid.NewGuid().ToString("n");
+            var tcs = new TaskCompletionSource<(string, string)>();
+            _pending[id] = tcs;
+            Requested?.Invoke(this, new ApprovalRequestedEventArgs(id, hook));
+
+            (string decision, string reason) = await WaitOrTimeout(id, tcs).ConfigureAwait(false);
+            string reply = decision == "allow" ? HookProtocol.Allow(reason) : HookProtocol.Deny(reason);
+            WriteJson(context, reply);
+        }
+        catch
+        {
+            Close(context, 500);
+        }
+    }
+
+    private async Task<(string, string)> WaitOrTimeout(string id, TaskCompletionSource<(string, string)> tcs)
+    {
+        Task finished = await Task.WhenAny(tcs.Task, Task.Delay(Timeout)).ConfigureAwait(false);
+        if (finished == tcs.Task) return tcs.Task.Result;
+
+        _pending.TryRemove(id, out _);
+        return ("deny", "No response from the panel.");
+    }
+
+    private static void WriteJson(HttpListenerContext context, string json)
+    {
+        try
+        {
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            context.Response.StatusCode = 200;
+            context.Response.ContentType = "application/json";
+            context.Response.OutputStream.Write(bytes, 0, bytes.Length);
+            context.Response.Close();
+        }
+        catch { /* client gone */ }
+    }
+
+    private static void Close(HttpListenerContext context, int status)
+    {
+        try { context.Response.StatusCode = status; context.Response.Close(); }
+        catch { }
+    }
+
+    private static int FindFreePort()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
+    }
+
+    private static bool FixedTimeEquals(string? a, string b)
+    {
+        if (string.IsNullOrEmpty(a)) return false;
+        int diff = a!.Length ^ b.Length;
+        int shared = Math.Min(a.Length, b.Length);
+        for (int i = 0; i < shared; i++) diff |= a[i] ^ b[i];
+        return diff == 0;
+    }
+
+    public void Dispose()
+    {
+        try { if (_listener.IsListening) _listener.Stop(); } catch { }
+        try { _listener.Close(); } catch { }
+        foreach (var kv in _pending) kv.Value.TrySetResult(("deny", "Panel closed."));
+        _pending.Clear();
+    }
+}

@@ -32,11 +32,15 @@ public static class PermissionPolicy
         "Read(**/id_rsa)",
     };
 
+    /// <summary>Tools whose calls are routed through the approval hook (shell included as PowerShell).</summary>
+    public const string HookMatcher = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell";
+
     /// <summary>
-    /// Builds the settings JSON (a <c>permissions.deny</c> list) for <c>claude -p --settings</c>,
-    /// optionally adding extra deny rules on top of the default floor.
+    /// Builds the settings JSON for <c>claude -p --settings</c>: the always-on <c>permissions.deny</c>
+    /// floor, plus - when <paramref name="hookCommand"/> is given - a PreToolUse hook that routes each
+    /// tool call to the panel's approval card before it runs.
     /// </summary>
-    public static string BuildSettingsJson(IEnumerable<string>? extraDeny = null)
+    public static string BuildSettingsJson(IEnumerable<string>? extraDeny = null, string? hookCommand = null)
     {
         var deny = new JArray();
         foreach (string rule in DefaultDenyRules())
@@ -55,6 +59,30 @@ public static class PermissionPolicy
         {
             ["permissions"] = new JObject { ["deny"] = deny },
         };
+
+        if (!string.IsNullOrEmpty(hookCommand))
+        {
+            settings["hooks"] = new JObject
+            {
+                ["PreToolUse"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["matcher"] = HookMatcher,
+                        ["hooks"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "command",
+                                ["command"] = hookCommand,
+                                ["timeout"] = 300,
+                            },
+                        },
+                    },
+                },
+            };
+        }
+
         return settings.ToString(Formatting.None);
     }
 }

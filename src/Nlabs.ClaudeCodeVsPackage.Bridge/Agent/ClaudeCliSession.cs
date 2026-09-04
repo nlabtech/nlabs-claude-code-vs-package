@@ -24,6 +24,11 @@ public sealed class ClaudeCliOptions
 
     /// <summary>Path to a settings JSON file (the permission floor), passed with --settings.</summary>
     public string? SettingsPath { get; set; }
+
+    /// <summary>Approval endpoint port; passed to the process so the PreToolUse hook can reach it.</summary>
+    public int? ApprovalPort { get; set; }
+    /// <summary>Approval endpoint token; the hook presents it when asking for a decision.</summary>
+    public string? ApprovalToken { get; set; }
 }
 
 /// <summary>
@@ -63,6 +68,12 @@ public sealed class ClaudeCliSession : IDisposable
             CreateNoWindow = true,
             StandardOutputEncoding = new UTF8Encoding(false),
         };
+
+        // The PreToolUse hook (a child of this process) reads these to reach the approval endpoint.
+        if (options.ApprovalPort.HasValue)
+            psi.EnvironmentVariables["NLABS_APPROVAL_PORT"] = options.ApprovalPort.Value.ToString();
+        if (!string.IsNullOrEmpty(options.ApprovalToken))
+            psi.EnvironmentVariables["NLABS_APPROVAL_TOKEN"] = options.ApprovalToken;
 
         _process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         _process.Exited += (_, __) => Exited?.Invoke(this, EventArgs.Empty);
