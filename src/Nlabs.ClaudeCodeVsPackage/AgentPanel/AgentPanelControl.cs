@@ -34,6 +34,7 @@ internal sealed class AgentPanelControl : UserControl
     private readonly ComboBox _modelCombo;
     private readonly ComboBox _modeCombo;
 
+    private readonly System.Collections.Generic.Queue<string> _queue = new System.Collections.Generic.Queue<string>();
     private ClaudeCliSession? _session;
     private StackPanel? _streamingContainer;
     private string _streamingText = string.Empty;
@@ -118,11 +119,29 @@ internal sealed class AgentPanelControl : UserControl
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(); // establish the UI thread
         string text = _input.Text?.Trim() ?? string.Empty;
-        if (text.Length == 0 || _busy) return; // one turn at a time
+        if (text.Length == 0) return;
 
         _input.Clear();
         AddBubble(text, isUser: true);
 
+        // The input stays live during a turn so the next message can be composed. If a turn is
+        // running, queue this one and send it when the turn ends, instead of dropping it or
+        // interleaving two turns on one session.
+        if (_busy)
+        {
+            _queue.Enqueue(text);
+            _status.Text = "Queued - it will send when the current turn ends.";
+            return;
+        }
+
+        await RunTurnAsync(text);
+    }
+
+    // Runs one turn: opens (or reuses) the session, adds the streaming reply bubble and sends the
+    // text. Used both for a fresh message and for draining the queue.
+    private async System.Threading.Tasks.Task RunTurnAsync(string text)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         try
         {
             EnsureSession();
@@ -189,6 +208,7 @@ internal sealed class AgentPanelControl : UserControl
                             ? "Turn failed."
                             : string.Format("Ready - last turn ${0:0.0000}.", e.TotalCostUsd.Value);
                     }
+                    DrainQueue();
                 });
                 break;
         }
@@ -350,13 +370,22 @@ internal sealed class AgentPanelControl : UserControl
         return tb;
     }
 
-    // While a turn is running, lock the input so turns cannot interleave, and show progress.
+    // Shows turn progress. The input stays live during a turn (messages typed then are queued), so
+    // the only state here is the status line and, when idle, returning focus to the input.
     private void SetBusy(bool busy)
     {
         _busy = busy;
-        _input.IsEnabled = !busy;
         if (busy) { _status.Text = "Claude is working..."; }
         else { _input.Focus(); }
+    }
+
+    // After a turn ends, send the next queued message (if any) as its own turn. Called from the UI
+    // dispatcher; RunTurnAsync re-establishes the main thread before touching the shell.
+    private void DrainQueue()
+    {
+        if (_busy || _queue.Count == 0) return;
+        string next = _queue.Dequeue();
+        _ = RunTurnAsync(next);
     }
 
     private void ScrollToEnd() => _scroller.ScrollToEnd();
@@ -383,6 +412,7 @@ internal sealed class AgentPanelControl : UserControl
         _session?.Dispose();
         _session = null;
         _streamingContainer = null;
+        _queue.Clear();
         _messages.Children.Clear();
         SetBusy(false);
         _status.Text = "New session - the model and permission apply on your next message.";
