@@ -130,6 +130,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["pickFolder"] = "Pick folder", ["folderSet"] = "Folder set - your next message starts here.",
                 ["cmdNew"] = "Start a new chat", ["cmdClear"] = "Clear this chat and its context",
                 ["commands"] = "Commands", ["projectCommands"] = "Project commands",
+                ["addSelection"] = "Add the editor selection", ["noSelection"] = "Select some code in the editor first.",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -148,6 +149,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["pickFolder"] = "Klasor sec", ["folderSet"] = "Klasor secildi - sonraki mesajin burada baslar.",
                 ["cmdNew"] = "Yeni bir sohbet baslat", ["cmdClear"] = "Bu sohbeti ve baglamini temizle",
                 ["commands"] = "Komutlar", ["projectCommands"] = "Proje komutlari",
+                ["addSelection"] = "Editordeki secimi ekle", ["noSelection"] = "Once editorde bir kod sec.",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -431,9 +433,12 @@ internal sealed class AgentPanelControl : UserControl
         inputGrid.Children.Add(_input);
         inputGrid.Children.Add(_placeholder);
 
-        // Left of the toolbar: the attach button. (More actions join it as those features land.)
+        // Left of the toolbar: attach an image, and pull in the code selected in the active editor.
         var leftTools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         leftTools.Children.Add(MakeIconButton("+", "attachHint", PickImages));
+#pragma warning disable VSTHRD010
+        leftTools.Children.Add(MakeIconButton("{}", "addSelection", AddSelection));
+#pragma warning restore VSTHRD010
 
         // Right of the toolbar: the selectors kept tight against the primary button, so a narrow
         // panel never wraps them away from it.
@@ -1943,6 +1948,62 @@ internal sealed class AgentPanelControl : UserControl
         };
         if (dlg.ShowDialog() != true) return;
         foreach (string path in dlg.FileNames) AddImageFromFile(path);
+    }
+
+    // The file extensions that map to a fenced-code language tag, for the selection block.
+    private static readonly Dictionary<string, string> CodeLanguages = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        [".cs"] = "csharp", [".ts"] = "ts", [".tsx"] = "tsx", [".js"] = "js", [".jsx"] = "jsx",
+        [".html"] = "html", [".css"] = "css", [".scss"] = "scss", [".json"] = "json", [".xml"] = "xml",
+        [".py"] = "python", [".sql"] = "sql", [".sh"] = "bash", [".ps1"] = "powershell", [".razor"] = "razor",
+        [".java"] = "java", [".go"] = "go", [".rs"] = "rust", [".yml"] = "yaml", [".yaml"] = "yaml", [".md"] = "markdown",
+    };
+
+    // Drops the code selected in the active editor into the input as a fenced block, captioned with the
+    // file and line range so Claude has the reference. The main path for "look at this bit of code".
+    private void AddSelection()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        (string? code, string? caption, string? ext) = ActiveSelection();
+        if (string.IsNullOrEmpty(code))
+        {
+            _status.Text = Loc("noSelection");
+            return;
+        }
+
+        string lang = ext != null && CodeLanguages.TryGetValue(ext, out string l) ? l : string.Empty;
+        string block = (caption != null ? caption + "\n" : string.Empty)
+            + "```" + lang + "\n" + code!.TrimEnd('\r', '\n') + "\n```\n";
+
+        int at = _input.CaretIndex;
+        string existing = _input.Text ?? string.Empty;
+        if (at > 0 && at <= existing.Length && existing.Length > 0 && existing[at - 1] != '\n') block = "\n" + block;
+        _input.Text = existing.Insert(Math.Min(at, existing.Length), block);
+        _input.CaretIndex = Math.Min(at + block.Length, _input.Text.Length);
+        _input.Focus();
+    }
+
+    // Reads the active document's current selection: its text, a "file:line" caption and the file's
+    // extension. Empty when no document is open or nothing is selected.
+    private static (string? code, string? caption, string? ext) ActiveSelection()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        try
+        {
+            if (Package.GetGlobalService(typeof(DTE)) is DTE2 dte && dte.ActiveDocument != null &&
+                dte.ActiveDocument.Selection is EnvDTE.TextSelection sel)
+            {
+                string text = sel.Text ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(text)) return (null, null, null);
+                string file = dte.ActiveDocument.Name ?? "selection";
+                int top = sel.TopPoint.Line, bottom = sel.BottomPoint.Line;
+                string caption = top == bottom ? file + ":" + top : file + ":" + top + "-" + bottom;
+                string ext = System.IO.Path.GetExtension(file);
+                return (text, caption, ext);
+            }
+        }
+        catch { /* no active document or selection unavailable */ }
+        return (null, null, null);
     }
 
     private void OnInputDragOver(object sender, DragEventArgs e)
