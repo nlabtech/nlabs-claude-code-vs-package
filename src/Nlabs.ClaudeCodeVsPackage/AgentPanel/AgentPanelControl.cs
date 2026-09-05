@@ -102,6 +102,7 @@ internal sealed class AgentPanelControl : UserControl
     private readonly ComboBox _modeCombo;
     private readonly ComboBox _effortCombo;
     private readonly ComboBox _convCombo;
+    private TextBox? _renameBox;   // swapped in over the switcher while renaming the current chat
     private readonly ComboBox _langCombo;
     private readonly ComboBox _accentCombo;
     private Border? _primary;       // the Send button; becomes Stop while a turn runs
@@ -116,7 +117,7 @@ internal sealed class AgentPanelControl : UserControl
             ["en"] = new System.Collections.Generic.Dictionary<string, string>
             {
                 ["placeholder"] = "Ask Claude - Enter sends", ["model"] = "Model", ["permission"] = "Permission",
-                ["chat"] = "Chat", ["language"] = "Language", ["new"] = "New", ["delete"] = "Delete",
+                ["chat"] = "Chat", ["language"] = "Language", ["new"] = "New", ["delete"] = "Delete", ["rename"] = "Rename",
                 ["send"] = "Send", ["stop"] = "Stop", ["you"] = "You", ["assistant"] = "Claude",
                 ["defaultModel"] = "Default model", ["askEach"] = "Ask each time", ["acceptEdits"] = "Accept edits", ["planMode"] = "Plan mode",
                 ["hello"] = "Type a message and press Enter.", ["working"] = "Claude is working...",
@@ -135,7 +136,7 @@ internal sealed class AgentPanelControl : UserControl
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
                 ["placeholder"] = "Claude'a bir sey sor - Enter gonderir", ["model"] = "Model", ["permission"] = "Izin",
-                ["chat"] = "Sohbet", ["language"] = "Dil", ["new"] = "Yeni", ["delete"] = "Sil",
+                ["chat"] = "Sohbet", ["language"] = "Dil", ["new"] = "Yeni", ["delete"] = "Sil", ["rename"] = "Yeniden adlandir",
                 ["send"] = "Gonder", ["stop"] = "Durdur", ["you"] = "Sen", ["assistant"] = "Claude",
                 ["defaultModel"] = "Varsayilan model", ["askEach"] = "Her seferinde sor", ["acceptEdits"] = "Duzenlemeleri kabul et", ["planMode"] = "Plan modu",
                 ["hello"] = "Bir mesaj yaz, Enter'a bas.", ["working"] = "Claude calisiyor...",
@@ -408,7 +409,8 @@ internal sealed class AgentPanelControl : UserControl
         return bar;
     }
 
-    // The conversation switcher plus New and Delete.
+    // The conversation switcher plus New, Rename and Delete. Rename swaps a text box in over the
+    // switcher; Enter commits it, Escape or a click away cancels.
     private UIElement BuildChatRow()
     {
         var row = new StackPanel
@@ -417,11 +419,80 @@ internal sealed class AgentPanelControl : UserControl
             Margin = new Thickness(12, 8, 12, 0),
         };
         row.Children.Add(LabelFor("chat", _convCombo));
+
+        _renameBox = new TextBox
+        {
+            MinWidth = 150,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed,
+        };
+        _renameBox.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        _renameBox.SetResourceReference(TextBox.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
+        _renameBox.KeyDown += OnRenameKey;
+        _renameBox.LostKeyboardFocus += (_, __) => EndRename();
+        row.Children.Add(_renameBox);
+
         row.Children.Add(MakeGhostButton("new", NewConversation));
+        var rename = MakeGhostButton("rename", BeginRename);
+        rename.Margin = new Thickness(6, 0, 0, 0);
+        row.Children.Add(rename);
         var del = MakeGhostButton("delete", DeleteConversation);
         del.Margin = new Thickness(6, 0, 0, 0);
         row.Children.Add(del);
         return row;
+    }
+
+    // Shows the rename box seeded with the current title. LabelFor keeps the switcher inside its own
+    // panel, so hide the combo itself and show the box beside it.
+    private void BeginRename()
+    {
+        if (_renameBox == null) return;
+        _renameBox.Text = _current.Title;
+        _convCombo.Visibility = Visibility.Collapsed;
+        _renameBox.Visibility = Visibility.Visible;
+        _renameBox.Focus();
+        _renameBox.SelectAll();
+    }
+
+    private void OnRenameKey(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            RenameCurrent(_renameBox?.Text ?? string.Empty);
+            SaveConversations();
+            EndRename();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            EndRename();
+            e.Handled = true;
+        }
+    }
+
+    // Restores the switcher. Idempotent, so a commit followed by the box losing focus is harmless.
+    private void EndRename()
+    {
+        if (_renameBox == null) return;
+        _renameBox.Visibility = Visibility.Collapsed;
+        _convCombo.Visibility = Visibility.Visible;
+    }
+
+    // Applies a manual title (a touch longer than the auto title, since the developer chose it).
+    private void RenameCurrent(string title)
+    {
+        title = title.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (title.Length == 0) return;
+        if (title.Length > 60) title = title.Substring(0, 60).TrimEnd() + "...";
+        _current.Title = title;
+        if (_current.Item != null)
+        {
+            _switching = true;
+            _current.Item.Content = title;
+            _switching = false;
+        }
     }
 
     // The bottom dock: the rounded input card (chip strip, text, and a toolbar row with the attach
