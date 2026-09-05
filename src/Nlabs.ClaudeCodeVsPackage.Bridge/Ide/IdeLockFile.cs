@@ -36,8 +36,13 @@ public sealed class IdeLockFile
 
     public string PathFor(int port) => Path.Combine(_directory, port + ".lock");
 
-    /// <summary>Writes (or overwrites) the lock file for this endpoint and returns its path.</summary>
-    public string Write(int port, string authToken, int processId, string ideName, IEnumerable<string> workspaceFolders)
+    /// <summary>
+    /// Writes (or overwrites) the lock file for this endpoint and returns its path.
+    /// <paramref name="runningInWindows"/> is part of the IDE discovery protocol: Claude Code reads it
+    /// to know the IDE runs on native Windows (not WSL) so it maps paths correctly - the official
+    /// editor extensions set it, and the CLI's Windows connection relies on it being present.
+    /// </summary>
+    public string Write(int port, string authToken, int processId, string ideName, IEnumerable<string> workspaceFolders, bool runningInWindows = true)
     {
         Directory.CreateDirectory(_directory);
 
@@ -46,6 +51,7 @@ public sealed class IdeLockFile
         json.Append("\"pid\":").Append(processId).Append(',');
         json.Append("\"ideName\":").Append(Quote(ideName)).Append(',');
         json.Append("\"transport\":\"ws\",");
+        json.Append("\"runningInWindows\":").Append(runningInWindows ? "true" : "false").Append(',');
         json.Append("\"authToken\":").Append(Quote(authToken)).Append(',');
         json.Append("\"workspaceFolders\":[");
         bool first = true;
