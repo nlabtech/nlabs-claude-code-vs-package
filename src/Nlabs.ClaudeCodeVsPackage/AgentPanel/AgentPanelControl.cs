@@ -137,6 +137,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["undoDone"] = "Reverted the last turn's file changes.", ["undoFail"] = "Could not revert - see your git working tree.",
                 ["planReady"] = "Claude has a plan", ["applyPlan"] = "Apply plan", ["keepPlanning"] = "Keep planning",
                 ["planApplied"] = "Applying the plan...", ["planKept"] = "Still planning...",
+                ["pickAgent"] = "Use a subagent", ["noAgents"] = "No subagents found",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -161,6 +162,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["undoDone"] = "Son turun dosya degisiklikleri geri alindi.", ["undoFail"] = "Geri alinamadi - git calisma agacini kontrol et.",
                 ["planReady"] = "Claude'un bir plani var", ["applyPlan"] = "Plani uygula", ["keepPlanning"] = "Planlamaya devam",
                 ["planApplied"] = "Plan uygulaniyor...", ["planKept"] = "Planlama suruyor...",
+                ["pickAgent"] = "Alt ajan kullan", ["noAgents"] = "Alt ajan bulunamadi",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -522,6 +524,9 @@ internal sealed class AgentPanelControl : UserControl
         leftTools.Children.Add(MakeIconButton("+", "attachHint", PickImages));
 #pragma warning disable VSTHRD010
         leftTools.Children.Add(MakeIconButton("{}", "addSelection", AddSelection));
+        Border agentButton = null!;
+        agentButton = MakeIconButton("@", "pickAgent", () => ShowSubagentMenu(agentButton));
+        leftTools.Children.Add(agentButton);
 #pragma warning restore VSTHRD010
 
         // Right of the toolbar: the selectors kept tight against the primary button, so a narrow
@@ -2155,6 +2160,97 @@ internal sealed class AgentPanelControl : UserControl
         SetBusy(false);
         _status.Text = Loc("newChat");
         SaveConversations();
+    }
+
+    // --- Subagents -----------------------------------------------------------------------------
+
+    // Opens a menu of the subagents defined for this project and the developer, anchored to the button.
+    // Picking one drops a directive into the input so the CLI delegates that part of the turn to it.
+    private void ShowSubagentMenu(UIElement anchor)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var menu = new ContextMenu { PlacementTarget = anchor, Placement = PlacementMode.Top };
+        List<(string Name, string Description)> agents = DiscoverSubagents();
+        if (agents.Count == 0)
+        {
+            menu.Items.Add(new MenuItem { Header = Loc("noAgents"), IsEnabled = false });
+        }
+        else
+        {
+            foreach ((string Name, string Description) a in agents)
+            {
+                string name = a.Name;
+                var item = new MenuItem { Header = name };
+                if (!string.IsNullOrEmpty(a.Description)) item.ToolTip = a.Description;
+                item.Click += (_, __) => InsertSubagent(name);
+                menu.Items.Add(item);
+            }
+        }
+        menu.IsOpen = true;
+    }
+
+    // Prepends "Use the <name> subagent to " so the developer just finishes the sentence with the task.
+    private void InsertSubagent(string name)
+    {
+        string directive = "Use the " + name + " subagent to ";
+        _input.Text = directive + (_input.Text ?? string.Empty);
+        _input.CaretIndex = _input.Text.Length;
+        _input.Focus();
+    }
+
+    // Discovers subagents from the project's and the developer's .claude/agents folders, de-duplicated
+    // by name (project wins) and sorted. Best-effort: an unreadable folder just contributes nothing.
+    private List<(string Name, string Description)> DiscoverSubagents()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var found = new List<(string, string)>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string root in SubagentRoots())
+        {
+            try
+            {
+                if (!Directory.Exists(root)) continue;
+                foreach (string file in Directory.EnumerateFiles(root, "*.md", SearchOption.AllDirectories))
+                {
+                    string name = FrontmatterValue(file, "name") ?? Path.GetFileNameWithoutExtension(file);
+                    if (string.IsNullOrEmpty(name) || !seen.Add(name)) continue;
+                    found.Add((name, FrontmatterValue(file, "description") ?? string.Empty));
+                }
+            }
+            catch { /* unreadable folder - skip it */ }
+        }
+        found.Sort((x, y) => string.Compare(x.Item1, y.Item1, StringComparison.OrdinalIgnoreCase));
+        return found;
+    }
+
+    private IEnumerable<string> SubagentRoots()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        string dir = WorkingDirectory();
+        if (!string.IsNullOrEmpty(dir)) yield return Path.Combine(dir, ".claude", "agents");
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(home)) yield return Path.Combine(home, ".claude", "agents");
+    }
+
+    // Reads one frontmatter value (e.g. name, description) from the head of a command/agent .md file.
+    private static string? FrontmatterValue(string file, string key)
+    {
+        try
+        {
+            int seen = 0;
+            bool inFrontmatter = false;
+            foreach (string raw in File.ReadLines(file))
+            {
+                if (++seen > 60) break;
+                string line = raw.Trim();
+                if (seen == 1) { if (line == "---") { inFrontmatter = true; continue; } return null; }
+                if (!inFrontmatter || line == "---") break;
+                if (line.StartsWith(key + ":", StringComparison.OrdinalIgnoreCase))
+                    return Tidy(line.Substring(key.Length + 1));
+            }
+        }
+        catch { /* unreadable - no value */ }
+        return null;
     }
 
     // --- Attachments ---------------------------------------------------------------------------
