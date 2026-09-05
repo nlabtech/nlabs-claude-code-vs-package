@@ -138,6 +138,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["planReady"] = "Claude has a plan", ["applyPlan"] = "Apply plan", ["keepPlanning"] = "Keep planning",
                 ["planApplied"] = "Applying the plan...", ["planKept"] = "Still planning...",
                 ["pickAgent"] = "Use a subagent", ["noAgents"] = "No subagents found",
+                ["review"] = "Review", ["bridgeOn"] = "Approvals on", ["bridgeOff"] = "Approvals off",
+                ["reviewPrompt"] = "Review my current uncommitted changes for bugs, security issues, and simple cleanups. Do not modify any files - just report your findings.",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -163,6 +165,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["planReady"] = "Claude'un bir plani var", ["applyPlan"] = "Plani uygula", ["keepPlanning"] = "Planlamaya devam",
                 ["planApplied"] = "Plan uygulaniyor...", ["planKept"] = "Planlama suruyor...",
                 ["pickAgent"] = "Alt ajan kullan", ["noAgents"] = "Alt ajan bulunamadi",
+                ["review"] = "Denetle", ["bridgeOn"] = "Onaylar acik", ["bridgeOff"] = "Onaylar kapali",
+                ["reviewPrompt"] = "Commit edilmemis mevcut degisikliklerimi hata, guvenlik sorunu ve basit iyilestirmeler icin incele. Hicbir dosyayi degistirme - sadece bulgulari raporla.",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -197,6 +201,8 @@ internal sealed class AgentPanelControl : UserControl
     private string? _snapshotRef;      // git ref to restore tracked files to (stash-create SHA, or HEAD)
     private Border? _undoButton;
     private TextBlock? _undoLabel;
+    private Border? _bridgeDot;        // approval-bridge indicator: bright when the endpoint is live
+    private TextBlock? _bridgeLabel;
 
     public AgentPanelControl()
     {
@@ -592,13 +598,36 @@ internal sealed class AgentPanelControl : UserControl
         _undoButton = undoButton;
         Bind(() => { if (_undoLabel != null) _undoLabel.Text = Loc("undoTurn"); });
 
+        // A one-click review of the working tree - sends a read-only "find issues" turn.
+#pragma warning disable VSTHRD010
+        Border reviewButton = BuildStatusButton(() => _ = SendReviewAsync(), out TextBlock reviewLabel);
+#pragma warning restore VSTHRD010
+        Bind(() => reviewLabel.Text = Loc("review"));
+
         var leftStatus = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         leftStatus.Children.Add(folderButton);
         leftStatus.Children.Add(undoButton);
+        leftStatus.Children.Add(reviewButton);
+
+        // The approval-bridge indicator on the right: a dot that brightens once the endpoint is live.
+        _bridgeDot = new Border
+        {
+            Width = 6, Height = 6, CornerRadius = new CornerRadius(3),
+            Background = Accent, Opacity = 0.25,
+            Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center,
+        };
+        _bridgeLabel = new TextBlock { FontSize = 11, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center };
+        _bridgeLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        Bind(() => _bridgeLabel.Text = Loc(_approval != null ? "bridgeOn" : "bridgeOff"));
+        var bridgePanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        bridgePanel.Children.Add(_bridgeDot);
+        bridgePanel.Children.Add(_bridgeLabel);
 
         var statusBar = new DockPanel { Margin = new Thickness(4, 7, 4, 0), LastChildFill = true };
         DockPanel.SetDock(leftStatus, Dock.Left);
+        DockPanel.SetDock(bridgePanel, Dock.Right);
         statusBar.Children.Add(leftStatus);
+        statusBar.Children.Add(bridgePanel);
         statusBar.Children.Add(_status);
 
         var composer = new StackPanel { Margin = new Thickness(12, 6, 12, 12) };
@@ -742,6 +771,7 @@ internal sealed class AgentPanelControl : UserControl
         if (_session != null) return;
 
         EnsureApproval();
+        UpdateBridgeStatus();
         var session = new ClaudeCliSession();
         session.Event += OnCliEvent;
         // Only react to an exit if this is still the live session - a manual Stop nulls the field
@@ -1913,6 +1943,24 @@ internal sealed class AgentPanelControl : UserControl
     private void UpdateUndoButton()
     {
         if (_undoButton != null) _undoButton.Visibility = _snapshotRef != null ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // Reflects whether the approval bridge is live: the dot brightens and the label flips. No port or
+    // other endpoint detail is shown - only that approvals are wired up.
+    private void UpdateBridgeStatus()
+    {
+        bool on = _approval != null;
+        if (_bridgeDot != null) _bridgeDot.Opacity = on ? 1.0 : 0.25;
+        if (_bridgeLabel != null) _bridgeLabel.Text = Loc(on ? "bridgeOn" : "bridgeOff");
+    }
+
+    // Sends a read-only review of the working tree as a turn, reusing the normal send path (so it
+    // queues behind a running turn rather than interleaving).
+    private async System.Threading.Tasks.Task SendReviewAsync()
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        _input.Text = Loc("reviewPrompt");
+        await SendAsync();
     }
 
     // Runs a git command in dir off the UI thread and returns (exit-zero, trimmed stdout). Never throws:
