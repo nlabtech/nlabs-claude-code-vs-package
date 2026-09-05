@@ -17,6 +17,24 @@ public class HookProtocolTests
     }
 
     [Fact]
+    public void ParseRequest_captures_the_plan_for_exit_plan_mode()
+    {
+        var r = HookProtocol.ParseRequest(
+            "{\"tool_name\":\"ExitPlanMode\",\"tool_input\":{\"plan\":\"1. do this\\n2. then that\"}}");
+
+        Assert.Equal("ExitPlanMode", r.ToolName);
+        Assert.Equal("1. do this\n2. then that", r.Plan);
+    }
+
+    [Fact]
+    public void ParseRequest_leaves_plan_null_for_other_tools()
+    {
+        var r = HookProtocol.ParseRequest("{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}");
+
+        Assert.Null(r.Plan);
+    }
+
+    [Fact]
     public void ParseRequest_tolerates_garbage()
     {
         var r = HookProtocol.ParseRequest("not json");

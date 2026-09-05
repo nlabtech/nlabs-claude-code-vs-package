@@ -9,6 +9,8 @@ public sealed class HookRequest
     public string ToolName { get; set; } = string.Empty;
     /// <summary>The tool input as pretty JSON, ready to show in the approval card.</summary>
     public string InputPreview { get; set; } = string.Empty;
+    /// <summary>The plan text, when the tool is ExitPlanMode - so the panel can show a plan card.</summary>
+    public string? Plan { get; set; }
 }
 
 /// <summary>
@@ -31,6 +33,8 @@ public static class HookProtocol
         req.ToolName = (string?)obj["tool_name"] ?? string.Empty;
         JToken? input = obj["tool_input"];
         req.InputPreview = input == null ? string.Empty : input.ToString(Formatting.Indented);
+        // ExitPlanMode carries the proposed plan; surface it so the panel can render a plan card.
+        if (req.ToolName == "ExitPlanMode") req.Plan = (string?)input?["plan"];
         return req;
     }
 

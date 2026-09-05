@@ -135,6 +135,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["undoTurn"] = "Undo turn",
                 ["undoConfirm"] = "Revert the tracked files changed in the last turn to their state before it? New files are left in place.",
                 ["undoDone"] = "Reverted the last turn's file changes.", ["undoFail"] = "Could not revert - see your git working tree.",
+                ["planReady"] = "Claude has a plan", ["applyPlan"] = "Apply plan", ["keepPlanning"] = "Keep planning",
+                ["planApplied"] = "Applying the plan...", ["planKept"] = "Still planning...",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -157,6 +159,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["undoTurn"] = "Turu geri al",
                 ["undoConfirm"] = "Son turda degisen izlenen dosyalar tur oncesi haline dondurulsun mu? Yeni dosyalar yerinde kalir.",
                 ["undoDone"] = "Son turun dosya degisiklikleri geri alindi.", ["undoFail"] = "Geri alinamadi - git calisma agacini kontrol et.",
+                ["planReady"] = "Claude'un bir plani var", ["applyPlan"] = "Plani uygula", ["keepPlanning"] = "Planlamaya devam",
+                ["planApplied"] = "Plan uygulaniyor...", ["planKept"] = "Planlama suruyor...",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -1503,28 +1507,57 @@ internal sealed class AgentPanelControl : UserControl
         });
     }
 
-    // The approval card: what Claude wants to run, its real parameters, and Allow / Deny / Always.
+    // The approval card. A normal tool shows its name and parameters with Allow / Deny / Always. When
+    // Claude presents a plan (ExitPlanMode in plan mode), it becomes a plan card: the plan rendered as
+    // markdown, with Apply (proceed) and Keep planning (refine) instead.
     private void ShowApprovalCard(string id, HookRequest req)
     {
+        bool isPlan = req.ToolName == "ExitPlanMode";
+
         var title = new TextBlock { FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
-        title.Inlines.Add(new Run(req.ToolName) { FontWeight = FontWeights.Bold, Foreground = Accent });
-        title.Inlines.Add(new Run(" " + Loc("wantsToRun")));
+        if (isPlan)
+        {
+            title.Inlines.Add(new Run(Loc("planReady")) { FontWeight = FontWeights.Bold, Foreground = Accent });
+        }
+        else
+        {
+            title.Inlines.Add(new Run(req.ToolName) { FontWeight = FontWeights.Bold, Foreground = Accent });
+            title.Inlines.Add(new Run(" " + Loc("wantsToRun")));
+        }
         title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
-        var preview = new TextBox
+        UIElement body;
+        if (isPlan)
         {
-            Text = req.InputPreview,
-            IsReadOnly = true,
-            BorderThickness = new Thickness(0),
-            Margin = new Thickness(0, 6, 0, 8),
-            FontFamily = MonoFont,
-            FontSize = 12,
-            Background = Brushes.Transparent,
-            TextWrapping = TextWrapping.NoWrap,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = 160,
-        };
-        preview.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            // Render the plan as markdown, scrolled if long, so a big plan stays readable in the card.
+            var planPanel = new StackPanel { Margin = new Thickness(0, 6, 0, 8) };
+            RenderMarkdownInto(planPanel, req.Plan ?? req.InputPreview);
+            body = new ScrollViewer
+            {
+                Content = planPanel,
+                MaxHeight = 300,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            };
+        }
+        else
+        {
+            var preview = new TextBox
+            {
+                Text = req.InputPreview,
+                IsReadOnly = true,
+                BorderThickness = new Thickness(0),
+                Margin = new Thickness(0, 6, 0, 8),
+                FontFamily = MonoFont,
+                FontSize = 12,
+                Background = Brushes.Transparent,
+                TextWrapping = TextWrapping.NoWrap,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                MaxHeight = 160,
+            };
+            preview.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            body = preview;
+        }
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal };
         var note = new TextBlock { Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center };
@@ -1532,7 +1565,7 @@ internal sealed class AgentPanelControl : UserControl
 
         var inner = new StackPanel();
         inner.Children.Add(title);
-        inner.Children.Add(preview);
+        inner.Children.Add(body);
         inner.Children.Add(buttons);
 
         var card = new Border
@@ -1555,14 +1588,25 @@ internal sealed class AgentPanelControl : UserControl
             buttons.Children.Add(note);
         }
 
-        var allowBtn = MakeAccentButton("allow", () => Decide(true, false, "allowed"));
-        allowBtn.Margin = new Thickness(0, 0, 8, 0);
-        var denyBtn = MakeGhostButton("deny", () => Decide(false, false, "denied"));
-        denyBtn.Margin = new Thickness(0, 0, 8, 0);
-        var alwaysBtn = MakeGhostButton("always", () => Decide(true, true, "allowed"));
-        buttons.Children.Add(allowBtn);
-        buttons.Children.Add(denyBtn);
-        buttons.Children.Add(alwaysBtn);
+        if (isPlan)
+        {
+            var applyBtn = MakeAccentButton("applyPlan", () => Decide(true, false, "planApplied"));
+            applyBtn.Margin = new Thickness(0, 0, 8, 0);
+            var keepBtn = MakeGhostButton("keepPlanning", () => Decide(false, false, "planKept"));
+            buttons.Children.Add(applyBtn);
+            buttons.Children.Add(keepBtn);
+        }
+        else
+        {
+            var allowBtn = MakeAccentButton("allow", () => Decide(true, false, "allowed"));
+            allowBtn.Margin = new Thickness(0, 0, 8, 0);
+            var denyBtn = MakeGhostButton("deny", () => Decide(false, false, "denied"));
+            denyBtn.Margin = new Thickness(0, 0, 8, 0);
+            var alwaysBtn = MakeGhostButton("always", () => Decide(true, true, "allowed"));
+            buttons.Children.Add(allowBtn);
+            buttons.Children.Add(denyBtn);
+            buttons.Children.Add(alwaysBtn);
+        }
 
         _messages.Children.Add(card);
         ScrollToEnd();
