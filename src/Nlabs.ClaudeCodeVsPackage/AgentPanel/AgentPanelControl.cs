@@ -132,6 +132,9 @@ internal sealed class AgentPanelControl : UserControl
                 ["cmdNew"] = "Start a new chat", ["cmdClear"] = "Clear this chat and its context",
                 ["commands"] = "Commands", ["projectCommands"] = "Project commands",
                 ["addSelection"] = "Add the editor selection", ["noSelection"] = "Select some code in the editor first.",
+                ["undoTurn"] = "Undo turn",
+                ["undoConfirm"] = "Revert the tracked files changed in the last turn to their state before it? New files are left in place.",
+                ["undoDone"] = "Reverted the last turn's file changes.", ["undoFail"] = "Could not revert - see your git working tree.",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
             {
@@ -151,6 +154,9 @@ internal sealed class AgentPanelControl : UserControl
                 ["cmdNew"] = "Yeni bir sohbet baslat", ["cmdClear"] = "Bu sohbeti ve baglamini temizle",
                 ["commands"] = "Komutlar", ["projectCommands"] = "Proje komutlari",
                 ["addSelection"] = "Editordeki secimi ekle", ["noSelection"] = "Once editorde bir kod sec.",
+                ["undoTurn"] = "Turu geri al",
+                ["undoConfirm"] = "Son turda degisen izlenen dosyalar tur oncesi haline dondurulsun mu? Yeni dosyalar yerinde kalir.",
+                ["undoDone"] = "Son turun dosya degisiklikleri geri alindi.", ["undoFail"] = "Geri alinamadi - git calisma agacini kontrol et.",
             },
         };
     private readonly System.Collections.Generic.List<Action> _localizers = new System.Collections.Generic.List<Action>();
@@ -182,6 +188,9 @@ internal sealed class AgentPanelControl : UserControl
     private string _workspaceKey = string.Empty;
     private string? _workingFolder;    // an explicit working folder chosen when no solution is open
     private TextBlock? _folderLabel;
+    private string? _snapshotRef;      // git ref to restore tracked files to (stash-create SHA, or HEAD)
+    private Border? _undoButton;
+    private TextBlock? _undoLabel;
 
     public AgentPanelControl()
     {
@@ -565,9 +574,22 @@ internal sealed class AgentPanelControl : UserControl
         Bind(() => _folderLabel!.Text = FolderCaption());
 #pragma warning restore VSTHRD010
 
+        // The undo control sits next to the folder; it stays hidden until a turn has a snapshot to revert.
+        // UndoTurnAsync re-establishes the UI thread itself before any shell access.
+#pragma warning disable VSTHRD010
+        var undoButton = BuildStatusButton(() => _ = UndoTurnAsync(), out _undoLabel);
+#pragma warning restore VSTHRD010
+        undoButton.Visibility = Visibility.Collapsed;
+        _undoButton = undoButton;
+        Bind(() => { if (_undoLabel != null) _undoLabel.Text = Loc("undoTurn"); });
+
+        var leftStatus = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        leftStatus.Children.Add(folderButton);
+        leftStatus.Children.Add(undoButton);
+
         var statusBar = new DockPanel { Margin = new Thickness(4, 7, 4, 0), LastChildFill = true };
-        DockPanel.SetDock(folderButton, Dock.Left);
-        statusBar.Children.Add(folderButton);
+        DockPanel.SetDock(leftStatus, Dock.Left);
+        statusBar.Children.Add(leftStatus);
         statusBar.Children.Add(_status);
 
         var composer = new StackPanel { Margin = new Thickness(12, 6, 12, 12) };
@@ -680,6 +702,12 @@ internal sealed class AgentPanelControl : UserControl
         try
         {
             EnsureSession();
+            // Snapshot the working tree before Claude can touch it, so this turn's file changes can be
+            // reverted. Fast and non-destructive; it must complete before the turn starts editing.
+#pragma warning disable VSTHRD010
+            string snapshotDir = WorkingDirectory();
+#pragma warning restore VSTHRD010
+            await SnapshotBeforeTurnAsync(snapshotDir);
             // The reply bubble is opened lazily (on the first text delta or after a tool chip), not
             // up front, so a turn that opens with a tool call renders the chip before any text bubble.
             _streamingText = string.Empty;
@@ -1778,9 +1806,93 @@ internal sealed class AgentPanelControl : UserControl
             _workspaceKey = _workingFolder;
             _session?.Dispose();
             _session = null;
+            _snapshotRef = null; // a snapshot from the old folder no longer applies
+            UpdateUndoButton();
             if (_folderLabel != null) _folderLabel.Text = FolderCaption();
             _status.Text = Loc("folderSet");
         }
+    }
+
+    // --- Checkpoint / undo ---------------------------------------------------------------------
+
+    // Snapshots the working tree before a turn so its file changes can be reverted. "git stash create"
+    // records the current state as a dangling commit WITHOUT touching the working tree, index or stash
+    // list; a clean tree returns nothing, so we fall back to HEAD. Untracked new files are not captured,
+    // and undo only ever restores tracked files - it never deletes - which keeps it safe.
+    private async System.Threading.Tasks.Task SnapshotBeforeTurnAsync(string dir)
+    {
+        _snapshotRef = null;
+        if (!string.IsNullOrEmpty(dir))
+        {
+            var (inside, flag) = await RunGitAsync(dir, "rev-parse --is-inside-work-tree");
+            if (inside && flag == "true")
+            {
+                var (made, sha) = await RunGitAsync(dir, "stash create");
+                if (made && sha.Length > 0)
+                {
+                    _snapshotRef = sha;
+                }
+                else
+                {
+                    var (okHead, head) = await RunGitAsync(dir, "rev-parse HEAD");
+                    _snapshotRef = okHead && head.Length > 0 ? head : null;
+                }
+            }
+        }
+        UpdateUndoButton();
+    }
+
+    // Reverts the tracked files changed since the snapshot back to it - only after the developer
+    // confirms, since it overwrites their current working-tree versions of those files.
+    private async System.Threading.Tasks.Task UndoTurnAsync()
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        if (_snapshotRef == null) return;
+        string dir = WorkingDirectory();
+        if (string.IsNullOrEmpty(dir)) return;
+
+        MessageBoxResult confirm = MessageBox.Show(
+            Loc("undoConfirm"), Loc("undoTurn"), MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        var (ok, _) = await RunGitAsync(dir, "checkout " + _snapshotRef + " -- .");
+        _status.Text = Loc(ok ? "undoDone" : "undoFail");
+        _snapshotRef = null;
+        UpdateUndoButton();
+    }
+
+    private void UpdateUndoButton()
+    {
+        if (_undoButton != null) _undoButton.Visibility = _snapshotRef != null ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // Runs a git command in dir off the UI thread and returns (exit-zero, trimmed stdout). Never throws:
+    // no git, no repo or a timeout all come back as (false, ""), which simply disables the undo control.
+    private static async System.Threading.Tasks.Task<(bool ok, string output)> RunGitAsync(string dir, string args)
+    {
+        return await System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("git", args)
+                {
+                    WorkingDirectory = dir,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                using (System.Diagnostics.Process? p = System.Diagnostics.Process.Start(psi))
+                {
+                    if (p == null) return (false, string.Empty);
+                    string output = p.StandardOutput.ReadToEnd();
+                    p.StandardError.ReadToEnd(); // drain so the pipe never blocks the process
+                    if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return (false, string.Empty); }
+                    return (p.ExitCode == 0, output.Trim());
+                }
+            }
+            catch { return (false, string.Empty); }
+        });
     }
 
     // --- Slash commands ------------------------------------------------------------------------
