@@ -35,6 +35,7 @@ namespace Nlabs.ClaudeCodeVsPackage;
 [ProvideAutoLoad(VSConstants.UICONTEXT.SolutionExists_string, PackageAutoLoadFlags.BackgroundLoad)]
 [ProvideMenuResource("Menus.ctmenu", 1)]
 [ProvideToolWindow(typeof(AgentPanelToolWindow))]
+[ProvideOptionPage(typeof(ExtensionOptionsPage), "Claude Code (nLabtech)", "General", 0, 0, supportsAutomation: true)]
 [Guid(PackageGuidString)]
 public sealed class ClaudeCodeVsPackage : AsyncPackage
 {
@@ -73,7 +74,14 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
                 OnOpenPanel, new CommandID(PackageGuids.CommandSet, PackageIds.OpenPanelCommandId)));
         }
 
-        StartBridge();
+        // Force the options page to load from storage now, so the settings below (and the panel's
+        // masking) reflect the developer's choices instead of the defaults on the first run.
+        GetDialogPage(typeof(ExtensionOptionsPage));
+
+        if (ExtensionOptions.StartBridgeOnLoad)
+        {
+            StartBridge();
+        }
     }
 
     /// <summary>Starts the bridge, wires it to the MCP handler, and writes the discovery lock file.</summary>

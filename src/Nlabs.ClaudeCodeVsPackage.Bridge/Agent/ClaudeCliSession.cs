@@ -171,8 +171,16 @@ public sealed class ClaudeCliSession : IDisposable
     /// Public because more than a session needs it - the panel also runs the CLI once to read its
     /// help and notice when the model list has moved on.
     /// </summary>
+    /// <summary>
+    /// An explicit path to the CLI, set from the extension's options page. Checked before the
+    /// environment and PATH, so a developer with a non-standard install can point at it directly.
+    /// </summary>
+    public static string? ExecutableOverride { get; set; }
+
     public static string? ResolveExecutable()
     {
+        if (!string.IsNullOrEmpty(ExecutableOverride) && File.Exists(ExecutableOverride)) return ExecutableOverride;
+
         string? overridePath = Environment.GetEnvironmentVariable("NLABS_CLAUDE_PATH");
         if (!string.IsNullOrEmpty(overridePath) && File.Exists(overridePath)) return overridePath;
 
