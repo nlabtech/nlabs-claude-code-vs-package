@@ -42,6 +42,8 @@ internal sealed class AgentPanelControl : UserControl
     // A faint accent-tinted fill for the user's own turn - the same hue as the accent, barely there.
     private readonly SolidColorBrush UserFill = new SolidColorBrush(Color.FromArgb(0x1F, 0xD9, 0x77, 0x57));
     private static readonly Brush OnAccent = Frozen(Color.FromRgb(0xFF, 0xFF, 0xFF));
+    // The one colour outside the accent: danger. A high-risk approval must not read as brand colour.
+    private static readonly Brush HighRisk = Frozen(Color.FromRgb(0xC0, 0x39, 0x2B));
 
     // The accent choices. Claude's warm tone is the default; the rest are alternatives.
     private static readonly (string Name, Color Color)[] Accents =
@@ -139,6 +141,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["planApplied"] = "Applying the plan...", ["planKept"] = "Still planning...",
                 ["pickAgent"] = "Use a subagent", ["noAgents"] = "No subagents found",
                 ["review"] = "Review", ["bridgeOn"] = "Approvals on", ["bridgeOff"] = "Approvals off",
+                ["riskLow"] = "Low risk", ["riskMedium"] = "Changes files", ["riskHigh"] = "High risk",
                 ["reviewPrompt"] = "Review my current uncommitted changes for bugs, security issues, and simple cleanups. Do not modify any files - just report your findings.",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
@@ -166,6 +169,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["planApplied"] = "Plan uygulaniyor...", ["planKept"] = "Planlama suruyor...",
                 ["pickAgent"] = "Alt ajan kullan", ["noAgents"] = "Alt ajan bulunamadi",
                 ["review"] = "Denetle", ["bridgeOn"] = "Onaylar acik", ["bridgeOff"] = "Onaylar kapali",
+                ["riskLow"] = "Dusuk risk", ["riskMedium"] = "Dosya degistirir", ["riskHigh"] = "Yuksek risk",
                 ["reviewPrompt"] = "Commit edilmemis mevcut degisikliklerimi hata, guvenlik sorunu ve basit iyilestirmeler icin incele. Hicbir dosyayi degistirme - sadece bulgulari raporla.",
             },
         };
@@ -1636,6 +1640,19 @@ internal sealed class AgentPanelControl : UserControl
         }
         title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
+        // Grade the call so the card says what is at stake - an approval that looks the same for
+        // "list open files" and "rm -rf" teaches people to click Allow without reading.
+        RiskAssessment? risk = isPlan ? null : RiskAssessor.Assess(req.ToolName, req.InputPreview);
+        UIElement header = title;
+        if (risk != null)
+        {
+            var headerRow = new WrapPanel();
+            title.VerticalAlignment = VerticalAlignment.Center;
+            headerRow.Children.Add(title);
+            headerRow.Children.Add(BuildRiskChip(risk));
+            header = headerRow;
+        }
+
         UIElement body;
         if (isPlan)
         {
@@ -1674,7 +1691,7 @@ internal sealed class AgentPanelControl : UserControl
         note.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
         var inner = new StackPanel();
-        inner.Children.Add(title);
+        inner.Children.Add(header);
         inner.Children.Add(body);
         inner.Children.Add(buttons);
 
@@ -1712,14 +1729,58 @@ internal sealed class AgentPanelControl : UserControl
             allowBtn.Margin = new Thickness(0, 0, 8, 0);
             var denyBtn = MakeGhostButton("deny", () => Decide(false, false, "denied"));
             denyBtn.Margin = new Thickness(0, 0, 8, 0);
-            var alwaysBtn = MakeGhostButton("always", () => Decide(true, true, "allowed"));
             buttons.Children.Add(allowBtn);
             buttons.Children.Add(denyBtn);
-            buttons.Children.Add(alwaysBtn);
+
+            // "Always allow" is withheld for high-risk calls: a blanket yes to a shell tool is
+            // exactly the decision that should stay per-call.
+            if (risk!.Level != RiskLevel.High)
+            {
+                buttons.Children.Add(MakeGhostButton("always", () => Decide(true, true, "allowed")));
+            }
         }
 
         _messages.Children.Add(card);
         ScrollToEnd();
+    }
+
+    // The risk badge on an approval card: filled for medium/high, quiet outline for low. The reason
+    // rides along as the tooltip rather than adding a second line to the card.
+    private Border BuildRiskChip(RiskAssessment risk)
+    {
+        var label = new TextBlock { FontSize = 10.5, FontWeight = FontWeights.SemiBold };
+        var chip = new Border
+        {
+            Child = label,
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(7, 1, 7, 1),
+            Margin = new Thickness(8, 1, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = risk.Reason,
+        };
+
+        switch (risk.Level)
+        {
+            case RiskLevel.High:
+                chip.Background = HighRisk;
+                label.Foreground = OnAccent;
+                break;
+            case RiskLevel.Medium:
+                chip.Background = Accent;
+                label.Foreground = OnAccent;
+                break;
+            default:
+                chip.Background = Brushes.Transparent;
+                chip.BorderThickness = new Thickness(1);
+                chip.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+                label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+                label.Opacity = 0.7;
+                break;
+        }
+
+        string key = risk.Level == RiskLevel.High ? "riskHigh" : risk.Level == RiskLevel.Medium ? "riskMedium" : "riskLow";
+        Bind(() => label.Text = Loc(key));
+        return chip;
     }
 
     private string Loc(string key) =>
