@@ -206,7 +206,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["cliMissing"] = "The Claude CLI was not found. Install it, or set its path in Tools > Options > Claude Code (nLabtech).",
                 ["cliStart"] = "The Claude CLI could not be started:", ["cliLost"] = "The session ended.",
                 ["turnFailed"] = "Turn failed.",
-                ["deleteConfirm"] = "Delete this chat and its messages? This cannot be undone.",
+                ["deleteConfirm"] = "Delete this chat and its messages? This cannot be undone.", ["cancel"] = "Cancel",
                 ["emptyTitle"] = "Claude Code, in Visual Studio",
                 ["emptyBody"] = "Ask a question, describe a change, or hand over a task. Claude works in the folder shown below and asks before it runs anything.",
                 ["hintSlash"] = "commands - the panel's own and the CLI's",
@@ -279,7 +279,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["cliMissing"] = "Claude CLI bulunamadi. Kur ya da yolunu Tools > Options > Claude Code (nLabtech) altinda ayarla.",
                 ["cliStart"] = "Claude CLI baslatilamadi:", ["cliLost"] = "Oturum sona erdi.",
                 ["turnFailed"] = "Tur basarisiz oldu.",
-                ["deleteConfirm"] = "Bu sohbet ve mesajlari silinsin mi? Geri alinamaz.",
+                ["deleteConfirm"] = "Bu sohbet ve mesajlari silinsin mi? Geri alinamaz.", ["cancel"] = "Vazgec",
                 ["emptyTitle"] = "Visual Studio icinde Claude Code",
                 ["emptyBody"] = "Bir soru sor, bir degisiklik anlat ya da isi devret. Claude asagida yazan klasorde calisir ve bir sey calistirmadan once sorar.",
                 ["hintSlash"] = "komutlar - panelin kendi komutlari ve CLI'ninkiler",
@@ -328,6 +328,7 @@ internal sealed class AgentPanelControl : UserControl
     private bool _modelCheckDone; // the model-staleness check runs once per panel
     private readonly VoiceRecorder _recorder = new VoiceRecorder();
     private RateLimitStatus? _lastUsage; // the newest usage the CLI reported, for the detail card
+    private Grid? _scrim;            // the dimmed layer a confirmation is drawn on
     private string? _speechCommand;  // the transcriber found on this machine, if any
     private bool _speechProbed;      // looked for one already - the answer will not change
     private StackPanel? _emptyState; // the welcome block, shown only while the feed is empty
@@ -526,7 +527,13 @@ internal sealed class AgentPanelControl : UserControl
         root.Children.Add(_tasksBox);
         root.Children.Add(composer);
         root.Children.Add(_scroller);
-        Content = root;
+
+        // The panel and, above it, the layer a confirmation is drawn on.
+        var layers = new Grid();
+        layers.Children.Add(root);
+        layers.Children.Add(BuildScrim());
+        layers.PreviewMouseLeftButtonDown += OnRootMouseDown;
+        Content = layers;
 
         // Everything is built and every label registered, so it's safe to apply the stored choices -
         // selecting an item fires the change handlers, which re-localize and recolour.
@@ -1811,15 +1818,17 @@ internal sealed class AgentPanelControl : UserControl
     }
 
     // Removes the current chat; keeps at least one around (clearing the last one just resets it).
-    private void DeleteConversation()
-    {
-        // A chat is the only record of what was asked and answered, and there is no undo for this.
-        if (MessageBox.Show(Loc("deleteConfirm"), Loc("delete"), MessageBoxButton.YesNo, MessageBoxImage.Warning)
-            != MessageBoxResult.Yes)
-        {
-            return;
-        }
+    private void DeleteConversation() => _ = DeleteConversationAsync();
 
+    // A chat is the only record of what was asked and answered, and there is no undo for this.
+    private async System.Threading.Tasks.Task DeleteConversationAsync()
+    {
+        if (!await ConfirmAsync("delete", "deleteConfirm", "delete", destructive: true)) return;
+        DeleteConversationConfirmed();
+    }
+
+    private void DeleteConversationConfirmed()
+    {
         if (_convCombo.Items.Count <= 1)
         {
             _current.Messages.Clear();
@@ -2212,17 +2221,17 @@ internal sealed class AgentPanelControl : UserControl
 
         if (isPlan)
         {
-            var applyBtn = MakeAccentButton("applyPlan", () => Decide(true, false, "planApplied"));
+            var applyBtn = MakeAccentButtonText(Loc("applyPlan"), () => Decide(true, false, "planApplied"));
             applyBtn.Margin = new Thickness(0, 0, 8, 0);
-            var keepBtn = MakeGhostButton("keepPlanning", () => Decide(false, false, "planKept"));
+            var keepBtn = MakeGhostButtonText(Loc("keepPlanning"), () => Decide(false, false, "planKept"));
             buttons.Children.Add(applyBtn);
             buttons.Children.Add(keepBtn);
         }
         else
         {
-            var allowBtn = MakeAccentButton("allow", () => Decide(true, false, "allowed"));
+            var allowBtn = MakeAccentButtonText(Loc("allow"), () => Decide(true, false, "allowed"));
             allowBtn.Margin = new Thickness(0, 0, 8, 0);
-            var denyBtn = MakeGhostButton("deny", () => Decide(false, false, "denied"));
+            var denyBtn = MakeGhostButtonText(Loc("deny"), () => Decide(false, false, "denied"));
             denyBtn.Margin = new Thickness(0, 0, 8, 0);
             buttons.Children.Add(allowBtn);
             buttons.Children.Add(denyBtn);
@@ -2231,7 +2240,7 @@ internal sealed class AgentPanelControl : UserControl
             // exactly the decision that should stay per-call.
             if (risk!.Level != RiskLevel.High)
             {
-                buttons.Children.Add(MakeGhostButton("always", () => Decide(true, true, "allowed")));
+                buttons.Children.Add(MakeGhostButtonText(Loc("always"), () => Decide(true, true, "allowed")));
             }
         }
 
@@ -2403,6 +2412,79 @@ internal sealed class AgentPanelControl : UserControl
         }
     }
 
+    // Going straight from one open selector to another took two clicks: while its list is up a
+    // ComboBox captures the mouse, so the first click only dismissed it and never reached what it was
+    // aimed at. Close the open one and open the one actually clicked, in a single click.
+    private void OnRootMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        ComboBox? open = OpenSelector();
+        if (open == null) return;
+
+        // A click on the open list itself is that list being used, not a click past it.
+        if (Descends(e.OriginalSource as DependencyObject, open)) return;
+
+        ComboBox? target = SelectorUnder(e.GetPosition(this));
+        if (target == null || ReferenceEquals(target, open)) return;
+
+        open.IsDropDownOpen = false;
+        e.Handled = true;
+
+        // Opening the next list has to wait for the first one to finish closing and release the
+        // mouse. This is a WPF dispatcher post from the UI thread to itself, not a thread switch, so
+        // the shell's threading rule does not apply.
+#pragma warning disable VSTHRD001, VSTHRD110
+        Dispatcher.BeginInvoke(
+            new Action(() => target.IsDropDownOpen = true),
+            System.Windows.Threading.DispatcherPriority.Input);
+#pragma warning restore VSTHRD001, VSTHRD110
+    }
+
+    private ComboBox? OpenSelector()
+    {
+        foreach (ComboBox combo in Selectors())
+        {
+            if (combo.IsDropDownOpen) return combo;
+        }
+        return null;
+    }
+
+    private ComboBox? SelectorUnder(Point point)
+    {
+        foreach (ComboBox combo in Selectors())
+        {
+            if (!combo.IsVisible) continue;
+            Point local = combo.TranslatePoint(new Point(0, 0), this);
+            var bounds = new Rect(local, combo.RenderSize);
+            if (bounds.Contains(point)) return combo;
+        }
+        return null;
+    }
+
+    private System.Collections.Generic.IEnumerable<ComboBox> Selectors()
+    {
+        yield return _modelCombo;
+        yield return _modeCombo;
+        yield return _effortCombo;
+        yield return _convCombo;
+        yield return _langCombo;
+        yield return _accentCombo;
+    }
+
+    // Walks both trees: a dropdown's items live in the combo's logical tree but in the popup's own
+    // visual tree, so neither walk alone answers "did this come from that control".
+    private static bool Descends(DependencyObject? node, DependencyObject ancestor)
+    {
+        while (node != null)
+        {
+            if (ReferenceEquals(node, ancestor)) return true;
+            DependencyObject? next = node is Visual || node is System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(node)
+                : null;
+            node = next ?? LogicalTreeHelper.GetParent(node);
+        }
+        return false;
+    }
+
     // A selector sized as a pill rather than a form field: small, and free to shrink. The width is
     // deliberately not fixed - when the panel is docked narrow the pills give way instead of wrapping
     // onto a second line and pushing Send away from the selectors it belongs beside.
@@ -2420,13 +2502,29 @@ internal sealed class AgentPanelControl : UserControl
     // hover tint and a hand cursor - a plain WPF Button cannot be themed this cleanly in code.
     private Border MakeAccentButton(string key, Action onClick)
     {
-        var label = new TextBlock
-        {
-            Foreground = OnAccent,
-            FontWeight = FontWeights.SemiBold,
-            FontSize = 11,
-        };
+        var label = AccentLabel();
         Bind(() => label.Text = Loc(key));
+        return AccentShell(label, onClick);
+    }
+
+    // The same button with its text fixed. Used by anything built per event - an approval, a
+    // confirmation - because those must not register a localizer that outlives the card it was on.
+    private Border MakeAccentButtonText(string text, Action onClick)
+    {
+        var label = AccentLabel();
+        label.Text = text;
+        return AccentShell(label, onClick);
+    }
+
+    private static TextBlock AccentLabel() => new TextBlock
+    {
+        Foreground = OnAccent,
+        FontWeight = FontWeights.SemiBold,
+        FontSize = 11,
+    };
+
+    private Border AccentShell(TextBlock label, Action onClick)
+    {
         var button = new Border
         {
             Child = label,
@@ -2448,9 +2546,27 @@ internal sealed class AgentPanelControl : UserControl
     // they need is to light up under the pointer.
     private Border MakeGhostButton(string key, Action onClick)
     {
+        TextBlock label = GhostLabel();
+        Bind(() => label.Text = Loc(key));
+        return GhostShell(label, onClick);
+    }
+
+    private Border MakeGhostButtonText(string text, Action onClick)
+    {
+        TextBlock label = GhostLabel();
+        label.Text = text;
+        return GhostShell(label, onClick);
+    }
+
+    private static TextBlock GhostLabel()
+    {
         var label = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
         label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-        Bind(() => label.Text = Loc(key));
+        return label;
+    }
+
+    private Border GhostShell(TextBlock label, Action onClick)
+    {
         var button = new Border
         {
             Child = label,
@@ -2620,9 +2736,7 @@ internal sealed class AgentPanelControl : UserControl
         string dir = WorkingDirectory();
         if (string.IsNullOrEmpty(dir)) return;
 
-        MessageBoxResult confirm = MessageBox.Show(
-            Loc("undoConfirm"), Loc("undoTurn"), MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (confirm != MessageBoxResult.Yes) return;
+        if (!await ConfirmAsync("undoTurn", "undoConfirm", "undoTurn", destructive: true)) return;
 
         var (ok, _) = await RunGitAsync(dir, "checkout " + _snapshotRef + " -- .");
         _status.Text = Loc(ok ? "undoDone" : "undoFail");
@@ -2690,6 +2804,105 @@ internal sealed class AgentPanelControl : UserControl
         }
 
         ShowCardPopup(anchor, stack);
+    }
+
+    // The panel's own confirmation, in place of Windows' MessageBox.
+    //
+    // A system dialog arrives in the operating system's theme, not the IDE's: against a dark Visual
+    // Studio it is a white box with a warning triangle, which reads as "something broke" rather than
+    // as the panel asking a question. This one is drawn on the panel, so it is themed like the rest
+    // of it - and a destructive confirmation is coloured as one.
+    private System.Threading.Tasks.Task<bool> ConfirmAsync(string titleKey, string bodyKey, string confirmKey, bool destructive)
+    {
+        var answer = new System.Threading.Tasks.TaskCompletionSource<bool>();
+        if (_scrim == null) return System.Threading.Tasks.Task.FromResult(false);
+
+        var title = new TextBlock
+        {
+            Text = Loc(titleKey),
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 13,
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+        title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var body = new TextBlock
+        {
+            Text = Loc(bodyKey),
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Opacity = 0.8,
+            Margin = new Thickness(0, 0, 0, 16),
+        };
+        body.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        void Close(bool confirmed)
+        {
+            _scrim.Visibility = Visibility.Collapsed;
+            _scrim.Children.Clear();
+            answer.TrySetResult(confirmed);
+        }
+
+        Border no = MakeGhostButtonText(Loc("cancel"), () => Close(false));
+        Border yes = MakeAccentButtonText(Loc(confirmKey), () => Close(true));
+        if (destructive)
+        {
+            // The one place the panel uses a colour other than its accent: an action that cannot be
+            // undone should not wear the same button as sending a message. These handlers run after
+            // the shell's own, so they have the last word on the brush.
+            yes.Background = HighRisk;
+            yes.MouseEnter += (_, __) => yes.Background = HighRisk;
+            yes.MouseLeave += (_, __) => yes.Background = HighRisk;
+        }
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        buttons.Children.Add(no);
+        buttons.Children.Add(yes);
+
+        var stack = new StackPanel();
+        stack.Children.Add(title);
+        stack.Children.Add(body);
+        stack.Children.Add(buttons);
+
+        var card = new Border
+        {
+            Child = stack,
+            MaxWidth = 340,
+            BorderThickness = new Thickness(1),
+            BorderBrush = destructive ? HighRisk : Accent,
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(16, 14, 16, 14),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        card.SetResourceReference(Border.BackgroundProperty, VsBrushes.ToolWindowBackgroundKey);
+        // A click on the card is not a click on the scrim behind it, which would answer "no".
+        card.MouseLeftButtonUp += (_, e) => e.Handled = true;
+
+        _scrim.Children.Add(card);
+        _scrim.Visibility = Visibility.Visible;
+        _scrim.MouseLeftButtonUp += ScrimClick;
+
+        void ScrimClick(object sender, MouseButtonEventArgs e)
+        {
+            _scrim.MouseLeftButtonUp -= ScrimClick;
+            Close(false); // clicking away is the safe answer, never the destructive one
+        }
+
+        return answer.Task;
+    }
+
+    // The dimmed layer a confirmation sits on. It covers the whole panel so nothing behind it can be
+    // clicked while the question is open.
+    private Grid BuildScrim()
+    {
+        var scrim = new Grid
+        {
+            Background = Frozen(Color.FromArgb(0x99, 0x00, 0x00, 0x00)),
+            Visibility = Visibility.Collapsed,
+        };
+        _scrim = scrim;
+        return scrim;
     }
 
     // What the approval state means, in a sentence. Deliberately says nothing about how the panel and
