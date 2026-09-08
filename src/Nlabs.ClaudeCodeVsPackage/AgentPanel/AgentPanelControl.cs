@@ -162,6 +162,12 @@ internal sealed class AgentPanelControl : UserControl
                 ["thinking"] = "Thinking...", ["thoughtFor"] = "Thought for {0}s",
                 ["thinkingTokens"] = "thinking", ["outTokens"] = "out", ["inTokens"] = "in",
                 ["cacheTokens"] = "cached", ["sessionTotals"] = "This session ({0} turns)",
+                ["askEachTip"] = "Claude asks before each edit and each command.",
+                ["acceptEditsTip"] = "File edits are applied without asking; commands still ask.",
+                ["planModeTip"] = "Explores and writes a plan first, and edits nothing until you accept it.",
+                ["bypassModeTip"] = "The CLI stops asking entirely. Use it only where a mistake is cheap to undo.",
+                ["effortTip"] = "How long Claude may think before answering. More effort costs more and is slower.",
+                ["debugAttached"] = "The debugger is paused - that state was attached to your message.",
                 ["approveQueued"] = "{0} more waiting", ["approveAll"] = "Allow all waiting",
                 ["gateNormal"] = "Approval: normal", ["gateFull"] = "Approval: full control", ["gateFree"] = "Approval: hands off",
                 ["gateNormalTip"] = "Asks before anything that changes files or runs a command, and waves through ordinary reads - click to change",
@@ -195,6 +201,9 @@ internal sealed class AgentPanelControl : UserControl
                 ["planReady"] = "Claude has a plan", ["applyPlan"] = "Apply plan", ["keepPlanning"] = "Keep planning",
                 ["planApplied"] = "Applying the plan...", ["planKept"] = "Still planning...",
                 ["pickAgent"] = "Use a subagent", ["noAgents"] = "No subagents found",
+                ["agentNew"] = "New agent...", ["agentCreated"] = "Created {0} - fill in its description, that is what the model reads.",
+                ["agentNoFolder"] = "Pick a working folder first; the agent is written into the project.",
+                ["agentCreateFailed"] = "Could not write the agent file - is the folder writable?",
                 ["review"] = "Review", ["bridgeOn"] = "Approvals on", ["bridgeOff"] = "Approvals off",
                 ["riskLow"] = "Low risk", ["riskMedium"] = "Changes files", ["riskHigh"] = "High risk",
                 ["bridgeOnWhat"] = "Claude asks here before it edits a file or runs a command, and you answer in the panel.",
@@ -224,6 +233,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["resetsIn"] = "resets in", ["resetSoon"] = "resetting now",
                 ["unitDay"] = "d", ["unitHour"] = "h", ["unitMinute"] = "m",
                 ["limitNear"] = "Near the limit.", ["limitUnknown"] = "No usage reported yet.",
+                ["limitOverage"] = "Spending past the plan.", ["limitMeasured"] = "Measured at {0}; refreshed each turn.",
+                ["modelGone"] = "The CLI no longer offers: {0}",
                 ["stopped"] = "Stopped - your next message starts a new session.", ["connected"] = "Connected.",
                 ["stalled"] = "still working",
                 ["workingVerbs"] = "Thinking...|Reading...|Working...|Writing...|Checking...",
@@ -243,6 +254,12 @@ internal sealed class AgentPanelControl : UserControl
                 ["thinking"] = "Dusunuyor...", ["thoughtFor"] = "{0} sn dusundu",
                 ["thinkingTokens"] = "dusunme", ["outTokens"] = "cikis", ["inTokens"] = "giris",
                 ["cacheTokens"] = "onbellek", ["sessionTotals"] = "Bu oturum ({0} tur)",
+                ["askEachTip"] = "Claude her duzenleme ve her komut oncesi sorar.",
+                ["acceptEditsTip"] = "Dosya duzenlemeleri sormadan uygulanir; komutlar yine sorar.",
+                ["planModeTip"] = "Once arastirip plan yazar; sen kabul edene kadar hicbir seyi degistirmez.",
+                ["bypassModeTip"] = "CLI hic sormaz. Yalnizca hatanin ucuz oldugu yerde kullan.",
+                ["effortTip"] = "Claude yanitlamadan once ne kadar dusunebilir. Daha fazla efor daha pahali ve daha yavas.",
+                ["debugAttached"] = "Hata ayiklayici duraklamis - o durum mesajina eklendi.",
                 ["approveQueued"] = "{0} tane daha bekliyor", ["approveAll"] = "Bekleyenlerin hepsine izin ver",
                 ["gateNormal"] = "Onay: normal", ["gateFull"] = "Onay: tam kontrol", ["gateFree"] = "Onay: eller serbest",
                 ["gateNormalTip"] = "Dosya degistiren ya da komut calistiran her seyden once sorar, siradan okumalari gecirir - degistirmek icin tikla",
@@ -276,6 +293,9 @@ internal sealed class AgentPanelControl : UserControl
                 ["planReady"] = "Claude'un bir plani var", ["applyPlan"] = "Plani uygula", ["keepPlanning"] = "Planlamaya devam",
                 ["planApplied"] = "Plan uygulaniyor...", ["planKept"] = "Planlama suruyor...",
                 ["pickAgent"] = "Alt ajan kullan", ["noAgents"] = "Alt ajan bulunamadi",
+                ["agentNew"] = "Yeni ajan...", ["agentCreated"] = "{0} olusturuldu - aciklamasini doldur, model onu okuyor.",
+                ["agentNoFolder"] = "Once bir calisma klasoru sec; ajan projenin icine yazilir.",
+                ["agentCreateFailed"] = "Ajan dosyasi yazilamadi - klasor yazilabilir mi?",
                 ["review"] = "Denetle", ["bridgeOn"] = "Onaylar acik", ["bridgeOff"] = "Onaylar kapali",
                 ["riskLow"] = "Dusuk risk", ["riskMedium"] = "Dosya degistirir", ["riskHigh"] = "Yuksek risk",
                 ["bridgeOnWhat"] = "Claude bir dosyayi degistirmeden ya da komut calistirmadan once burada sorar; yaniti panelde verirsin.",
@@ -305,6 +325,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["resetsIn"] = "sifirlanmasina", ["resetSoon"] = "simdi sifirlaniyor",
                 ["unitDay"] = "g", ["unitHour"] = "sa", ["unitMinute"] = "dk",
                 ["limitNear"] = "Limite yaklasildi.", ["limitUnknown"] = "Henuz kullanim bildirilmedi.",
+                ["limitOverage"] = "Plan disi harcama yapiliyor.", ["limitMeasured"] = "Olcum {0} itibariyla; her turda tazelenir.",
+                ["modelGone"] = "CLI artik sunmuyor: {0}",
                 ["stopped"] = "Durduruldu - sonraki mesajin yeni bir oturum baslatir.", ["connected"] = "Baglandi.",
                 ["stalled"] = "hala calisiyor",
                 ["workingVerbs"] = "Dusunuyor...|Okuyor...|Calisiyor...|Yaziyor...|Kontrol ediyor...",
@@ -458,6 +480,18 @@ internal sealed class AgentPanelControl : UserControl
         Bind(() => SetComboItemLabel(_modeCombo, 2, Loc("planMode")));
         Bind(() => SetComboItemLabel(_modeCombo, 3, Loc("bypassMode")));
         Bind(() => SetComboItemLabel(_effortCombo, 0, Loc("defaultEffort")));
+
+        // What each permission mode actually does. Four short names that all sound reasonable is how
+        // someone ends up in a mode that never asks without having chosen that.
+        Bind(() =>
+        {
+            SetComboItemTip(_modeCombo, 0, Loc("askEachTip"));
+            SetComboItemTip(_modeCombo, 1, Loc("acceptEditsTip"));
+            SetComboItemTip(_modeCombo, 2, Loc("planModeTip"));
+            SetComboItemTip(_modeCombo, 3, Loc("bypassModeTip"));
+            _modeCombo.ToolTip = Loc("permission");
+            _effortCombo.ToolTip = Loc("effortTip");
+        });
         _convCombo = new ComboBox
         {
             MinWidth = 150,
@@ -966,6 +1000,17 @@ internal sealed class AgentPanelControl : UserControl
         string text = _input.Text?.Trim() ?? string.Empty;
         List<PendingImage> images = TakePending();
         if (text.Length == 0 && images.Count == 0) return;
+
+        // If execution is stopped at a breakpoint, that is almost certainly what the question is
+        // about, and retyping the stack by hand is the reason people paste screenshots instead.
+#pragma warning disable VSTHRD010
+        string paused = DebuggerContext();
+#pragma warning restore VSTHRD010
+        if (paused.Length > 0)
+        {
+            text = text.Length > 0 ? text + "\n\n" + paused : paused;
+            _status.Text = Loc("debugAttached");
+        }
 
         _input.Clear();
         AddUserBubble(text, images);
@@ -2690,6 +2735,18 @@ internal sealed class AgentPanelControl : UserControl
         return new ComboBoxItem { Content = row, Tag = value };
     }
 
+    // The description of a selector row, as its tooltip.
+    //
+    // The reference for this panel put the description under the name inside the open list, and it
+    // was right that the name alone is not enough - "Accept edits" and "Bypass permissions" are not
+    // distinguishable from four words. A tooltip carries the same sentence without also widening the
+    // closed pill, which has to survive a narrow dock.
+    private static void SetComboItemTip(ComboBox combo, int index, string tip)
+    {
+        if (index < 0 || index >= combo.Items.Count) return;
+        if (combo.Items[index] is ComboBoxItem item) item.ToolTip = tip;
+    }
+
     // Re-labels one selector row when the language changes, leaving its glyph and value alone.
     private static void SetComboItemLabel(ComboBox combo, int index, string label)
     {
@@ -3097,6 +3154,27 @@ internal sealed class AgentPanelControl : UserControl
                 var warn = new TextBlock { Text = Loc("limitNear"), FontSize = 10.5, Foreground = Accent, Margin = new Thickness(0, 4, 0, 0) };
                 stack.Children.Add(warn);
             }
+
+            if (_lastUsage.IsUsingOverage)
+            {
+                var over = new TextBlock { Text = Loc("limitOverage"), FontSize = 10.5, Foreground = HighRisk, Margin = new Thickness(0, 2, 0, 0) };
+                stack.Children.Add(over);
+            }
+
+            if (_lastUsage.MeasuredAt != default(DateTimeOffset))
+            {
+                var when = new TextBlock
+                {
+                    Text = string.Format(Loc("limitMeasured"),
+                        _lastUsage.MeasuredAt.ToLocalTime().ToString("t", System.Globalization.CultureInfo.CurrentCulture)),
+                    FontSize = 10,
+                    Opacity = 0.45,
+                    Margin = new Thickness(0, 4, 0, 0),
+                    TextWrapping = TextWrapping.Wrap,
+                };
+                when.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+                stack.Children.Add(when);
+            }
         }
 
         // What this panel has spent since it opened - the subscription windows above are the whole
@@ -3424,11 +3502,18 @@ internal sealed class AgentPanelControl : UserControl
         if (!ok) return;
 
         ModelCatalogDiff diff = ModelCatalogCheck.Compare(help, offered);
-        if (!diff.IsStale) return;
 
-        string names = string.Join(", ", diff.NewInCli);
-        _status.Text = string.Format(Loc("newModel"), names);
-        _modelCombo.ToolTip = string.Format(Loc("newModel"), names);
+        // Both directions matter, and they fail differently. A tier the panel has not caught up with
+        // is an option the developer is missing; one the CLI has retired is an option that will fail
+        // the moment it is picked - so the second is reported even though it is not "staleness".
+        var notes = new List<string>();
+        if (diff.NewInCli.Count > 0) notes.Add(string.Format(Loc("newModel"), string.Join(", ", diff.NewInCli)));
+        if (diff.MissingFromCli.Count > 0) notes.Add(string.Format(Loc("modelGone"), string.Join(", ", diff.MissingFromCli)));
+        if (notes.Count == 0) return;
+
+        string message = string.Join("  ", notes);
+        _status.Text = message;
+        _modelCombo.ToolTip = message;
     }
 
     // Runs a short-lived process off the UI thread and returns (exit-zero, trimmed stdout). Never
@@ -4040,42 +4125,240 @@ internal sealed class AgentPanelControl : UserControl
     private void ShowSubagentMenu(UIElement anchor)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        var menu = new ContextMenu { PlacementTarget = anchor, Placement = PlacementMode.Top, MaxHeight = 520 };
         List<(string Name, string Description, bool FromProject)> agents = DiscoverSubagents();
+
+        // A search box rather than a menu, because a developer accumulates dozens of these and
+        // scrolling a list of thirty names is not how anyone finds the one they meant. It searches
+        // the description too: agents are picked by what they do, not by what they were called.
+        var search = new TextBox { FontSize = 12, Margin = new Thickness(0, 0, 0, 6), MinWidth = 300 };
+        search.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        search.SetResourceReference(TextBox.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
+
+        var list = new ListBox
+        {
+            MaxHeight = 300,
+            BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent,
+        };
+        list.SetResourceReference(ListBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var popup = new Popup
+        {
+            PlacementTarget = anchor,
+            Placement = PlacementMode.Top,
+            StaysOpen = false,
+            AllowsTransparency = true,
+        };
+
+        void Fill()
+        {
+            string q = search.Text?.Trim() ?? string.Empty;
+            list.Items.Clear();
+            foreach ((string Name, string Description, bool FromProject) a in agents)
+            {
+                if (q.Length > 0 &&
+                    a.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0 &&
+                    a.Description.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+                list.Items.Add(new ListBoxItem { Content = BuildAgentRow(a), Tag = a.Name, Padding = new Thickness(2) });
+            }
+            if (list.Items.Count > 0) list.SelectedIndex = 0;
+        }
+
+        void Pick()
+        {
+            if (list.SelectedItem is ListBoxItem it && it.Tag is string picked)
+            {
+                popup.IsOpen = false;
+                InsertSubagent(picked);
+            }
+        }
+
+        search.TextChanged += (_, __) => Fill();
+        search.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Down) { list.SelectedIndex = Math.Min(list.SelectedIndex + 1, list.Items.Count - 1); e.Handled = true; }
+            else if (e.Key == Key.Up) { list.SelectedIndex = Math.Max(list.SelectedIndex - 1, 0); e.Handled = true; }
+            else if (e.Key == Key.Enter) { Pick(); e.Handled = true; }
+            else if (e.Key == Key.Escape) { popup.IsOpen = false; e.Handled = true; }
+        };
+        list.PreviewMouseLeftButtonUp += (_, __) => Pick();
+
+        var stack = new StackPanel { MinWidth = 300 };
+        stack.Children.Add(search);
         if (agents.Count == 0)
         {
-            menu.Items.Add(new MenuItem { Header = Loc("noAgents"), IsEnabled = false });
-            menu.IsOpen = true;
-            return;
+            var none = new TextBlock { Text = Loc("noAgents"), FontSize = 11, Opacity = 0.6, Margin = new Thickness(2, 2, 2, 6) };
+            none.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            stack.Children.Add(none);
         }
-
-        // Grouped by where they came from, because "the project defines this one" is the difference
-        // that decides whether a teammate has it too. The header stays a plain string so the menu's
-        // own type-ahead keeps working - with dozens of agents, typing the name is how it is used.
-        bool wroteProjectHeader = false;
-        bool wroteUserHeader = false;
-        foreach ((string Name, string Description, bool FromProject) a in agents)
+        else
         {
-            if (a.FromProject && !wroteProjectHeader)
-            {
-                menu.Items.Add(new MenuItem { Header = Loc("agentProject"), IsEnabled = false });
-                wroteProjectHeader = true;
-            }
-            else if (!a.FromProject && !wroteUserHeader)
-            {
-                if (wroteProjectHeader) menu.Items.Add(new Separator());
-                menu.Items.Add(new MenuItem { Header = Loc("agentUser"), IsEnabled = false });
-                wroteUserHeader = true;
-            }
-
-            string name = a.Name;
-            var item = new MenuItem { Header = name };
-            if (!string.IsNullOrEmpty(a.Description)) item.ToolTip = a.Description;
-            item.Click += (_, __) => InsertSubagent(name);
-            menu.Items.Add(item);
+            stack.Children.Add(list);
         }
 
-        menu.IsOpen = true;
+        // Writing the file by hand means knowing the frontmatter by heart; this leaves a skeleton
+        // open in the editor with the two fields that matter still to be filled in.
+        Border create = MakeGhostButtonText(Loc("agentNew"), () =>
+        {
+            popup.IsOpen = false;
+            CreateSubagent(search.Text);
+        });
+        create.HorizontalAlignment = HorizontalAlignment.Left;
+        create.Margin = new Thickness(0, 6, 0, 0);
+        stack.Children.Add(create);
+
+        var card = new Border
+        {
+            Child = stack,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 8, 10, 8),
+        };
+        card.SetResourceReference(Border.BackgroundProperty, VsBrushes.ToolWindowBackgroundKey);
+        card.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+
+        popup.Child = card;
+        Fill();
+        popup.IsOpen = true;
+        search.Focus();
+    }
+
+    // One agent in the picker: its name, where it came from, and what it is for.
+    private UIElement BuildAgentRow((string Name, string Description, bool FromProject) agent)
+    {
+        var name = new TextBlock { Text = agent.Name, FontWeight = FontWeights.SemiBold, FontSize = 12 };
+        name.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var origin = new TextBlock
+        {
+            Text = Loc(agent.FromProject ? "agentProject" : "agentUser"),
+            FontSize = 9.5,
+            Opacity = 0.5,
+            Margin = new Thickness(8, 2, 0, 0),
+        };
+        origin.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var head = new StackPanel { Orientation = Orientation.Horizontal };
+        head.Children.Add(name);
+        head.Children.Add(origin);
+
+        var row = new StackPanel { Margin = new Thickness(4, 3, 4, 3) };
+        row.Children.Add(head);
+        if (!string.IsNullOrEmpty(agent.Description))
+        {
+            var desc = new TextBlock
+            {
+                Text = agent.Description,
+                FontSize = 10.5,
+                Opacity = 0.6,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = 300,
+            };
+            desc.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            row.Children.Add(desc);
+        }
+        return row;
+    }
+
+    // Writes a new agent into the project's .claude/agents and opens it. Project, not user: an agent
+    // that only exists on this machine is one a teammate cloning the repository will not have.
+    private void CreateSubagent(string? suggestedName)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        string dir = WorkingDirectory();
+        if (string.IsNullOrEmpty(dir)) { _status.Text = Loc("agentNoFolder"); return; }
+
+        string name = Slug(suggestedName);
+        try
+        {
+            string folder = Path.Combine(dir, ".claude", "agents");
+            Directory.CreateDirectory(folder);
+
+            string path = Path.Combine(folder, name + ".md");
+            if (!File.Exists(path))
+            {
+                File.WriteAllText(path, AgentSkeleton(name), new System.Text.UTF8Encoding(false));
+            }
+
+            OpenInEditor(path);
+            _status.Text = string.Format(Loc("agentCreated"), name);
+        }
+        catch
+        {
+            _status.Text = Loc("agentCreateFailed");
+        }
+    }
+
+    // The description is the field that matters: the model chooses an agent by reading it, so the
+    // skeleton says so rather than leaving an empty line.
+    private static string AgentSkeleton(string name) =>
+        "---\n" +
+        "name: " + name + "\n" +
+        "description: What this agent is for, and when it should be chosen. The model reads this\n" +
+        "  to decide whether to delegate, so write it as a trigger, not as a title.\n" +
+        "---\n\n" +
+        "Write the agent's instructions here.\n";
+
+    // A file name from whatever was typed in the search box; falls back to something obvious.
+    private static string Slug(string? text)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (char c in (text ?? string.Empty).Trim().ToLowerInvariant())
+        {
+            if (char.IsLetterOrDigit(c) && c < 128) sb.Append(c);
+            else if (c == ' ' || c == '-' || c == '_') sb.Append('-');
+        }
+        string slug = sb.ToString().Trim('-');
+        return slug.Length == 0 ? "new-agent" : slug;
+    }
+
+    // Where execution is stopped, as a block appended to the message. Only the frames - no locals and
+    // no watch values, which is where a password or a token would be sitting.
+    private string DebuggerContext()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        try
+        {
+            if (!(Package.GetGlobalService(typeof(DTE)) is DTE2 dte)) return string.Empty;
+            if (dte.Debugger == null || dte.Debugger.CurrentMode != dbgDebugMode.dbgBreakMode) return string.Empty;
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("Debugger is paused. Call stack (innermost first):\n");
+
+            int shown = 0;
+            StackFrames? frames = dte.Debugger.CurrentThread?.StackFrames;
+            if (frames != null)
+            {
+                foreach (StackFrame frame in frames)
+                {
+                    sb.Append("  ").Append(frame.FunctionName).Append('\n');
+                    if (++shown >= 12) break; // enough to locate the problem, not the whole runtime
+                }
+            }
+
+            return shown == 0 ? string.Empty : sb.ToString().TrimEnd();
+        }
+        catch
+        {
+            return string.Empty; // no debugger, or it moved on between the check and the read
+        }
+    }
+
+    private void OpenInEditor(string path)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        try
+        {
+            if (Package.GetGlobalService(typeof(DTE)) is DTE2 dte)
+            {
+                dte.ItemOperations.OpenFile(path);
+            }
+        }
+        catch { /* no shell, or the file cannot be opened - it is still written */ }
     }
 
     // Prepends "Use the <name> subagent to " so the developer just finishes the sentence with the task.

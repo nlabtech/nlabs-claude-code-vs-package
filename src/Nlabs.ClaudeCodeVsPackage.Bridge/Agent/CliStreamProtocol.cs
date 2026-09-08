@@ -75,6 +75,19 @@ public sealed class RateLimitStatus
     public System.Collections.Generic.IReadOnlyList<RateLimitWindow> Windows { get; set; }
         = System.Array.Empty<RateLimitWindow>();
 
+    /// <summary>True when the account is spending past its plan.</summary>
+    public bool IsUsingOverage { get; set; }
+
+    /// <summary>The CLI's overage state, e.g. <c>rejected</c> or <c>approved</c>; empty when unsaid.</summary>
+    public string OverageStatus { get; set; } = string.Empty;
+
+    /// <summary>
+    /// When this reading was taken. The CLI reports usage on its own schedule, so a figure on screen
+    /// can be several turns old; saying when it was measured is the difference between a number and
+    /// a number you can act on.
+    /// </summary>
+    public DateTimeOffset MeasuredAt { get; set; }
+
     /// <summary>True when usage is near or past a limit (anything other than plain <c>allowed</c>).</summary>
     public bool Warning => !string.Equals(Status, "allowed", StringComparison.OrdinalIgnoreCase);
 
@@ -415,6 +428,11 @@ public static class CliStreamProtocol
         {
             Status = (string?)info["status"] ?? string.Empty,
             Windows = windows,
+            // Overage is spending past the plan. It has to be visible, because it is the one part of
+            // usage that carries a charge the developer did not already agree to by subscribing.
+            IsUsingOverage = (bool?)info["isUsingOverage"] ?? false,
+            OverageStatus = (string?)info["overageStatus"] ?? string.Empty,
+            MeasuredAt = DateTimeOffset.Now,
         };
     }
 
