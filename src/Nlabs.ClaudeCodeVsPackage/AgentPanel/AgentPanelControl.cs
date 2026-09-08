@@ -160,6 +160,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["defaultModel"] = "Default model", ["askEach"] = "Ask each time", ["acceptEdits"] = "Accept edits", ["planMode"] = "Plan mode",
                 ["hello"] = "Type a message and press Enter.", ["working"] = "Claude is working...",
                 ["thinking"] = "Thinking...", ["thoughtFor"] = "Thought for {0}s",
+                ["thinkingTokens"] = "thinking", ["outTokens"] = "out", ["inTokens"] = "in",
+                ["cacheTokens"] = "cached", ["sessionTotals"] = "This session ({0} turns)",
                 ["newChat"] = "New chat - type a message to begin.",
                 ["switched"] = "Switched - your next message resumes this chat.", ["tasks"] = "Tasks",
                 ["copy"] = "Copy", ["copied"] = "Copied", ["session"] = "session",
@@ -234,6 +236,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["defaultModel"] = "Varsayilan model", ["askEach"] = "Her seferinde sor", ["acceptEdits"] = "Duzenlemeleri kabul et", ["planMode"] = "Plan modu",
                 ["hello"] = "Bir mesaj yaz, Enter'a bas.", ["working"] = "Claude calisiyor...",
                 ["thinking"] = "Dusunuyor...", ["thoughtFor"] = "{0} sn dusundu",
+                ["thinkingTokens"] = "dusunme", ["outTokens"] = "cikis", ["inTokens"] = "giris",
+                ["cacheTokens"] = "onbellek", ["sessionTotals"] = "Bu oturum ({0} tur)",
                 ["newChat"] = "Yeni sohbet - baslamak icin bir mesaj yaz.",
                 ["switched"] = "Gecildi - sonraki mesajin bu sohbeti surdurur.", ["tasks"] = "Gorevler",
                 ["copy"] = "Kopyala", ["copied"] = "Kopyalandi", ["session"] = "oturum",
@@ -330,6 +334,9 @@ internal sealed class AgentPanelControl : UserControl
     private bool _modelCheckDone; // the model-staleness check runs once per panel
     private readonly VoiceRecorder _recorder = new VoiceRecorder();
     private RateLimitStatus? _lastUsage; // the newest usage the CLI reported, for the detail card
+    private readonly TurnUsage _sessionUsage = new TurnUsage(); // what this panel has spent since it opened
+    private int _sessionTurns;
+    private int _turnThinkingTokens; // live reasoning estimate for the turn in flight
     private Grid? _scrim;            // the dimmed layer a confirmation is drawn on
     private string _thinkingText = string.Empty;
     private Border? _thinkingBox;
@@ -1058,6 +1065,12 @@ internal sealed class AgentPanelControl : UserControl
         switch (e.Kind)
         {
             case CliEventKind.SystemInit:
+                if (e.ThinkingTokens.HasValue)
+                {
+                    // Reasoning is the one spend that happens before anything appears on screen.
+                    _turnThinkingTokens = e.ThinkingTokens.Value;
+                    break;
+                }
                 if (!string.IsNullOrEmpty(e.SessionId)) OnUi(() => { _current.CliSessionId = e.SessionId; SaveConversations(); });
                 if (!string.IsNullOrEmpty(e.Model)) OnUi(() => _status.Text = "Model: " + e.Model);
                 break;
@@ -1147,6 +1160,13 @@ internal sealed class AgentPanelControl : UserControl
                     _renderTimer.Stop();
                     FlushAssistantText();
                     SetBusy(false);
+
+                    if (e.Usage != null)
+                    {
+                        AddTurnFooter(e.Usage, e.TotalCostUsd);
+                        AccumulateSession(e.Usage);
+                    }
+
                     if (e.TotalCostUsd.HasValue)
                     {
                         _sessionCost += e.TotalCostUsd.Value;
@@ -1154,6 +1174,7 @@ internal sealed class AgentPanelControl : UserControl
                             ? Loc("turnFailed")
                             : string.Format("${0:0.0000} \u00B7 {1} ${2:0.0000}", e.TotalCostUsd.Value, Loc("session"), _sessionCost);
                     }
+                    ScrollToEndIfAtBottom();
                     SaveConversations();
                     DrainQueue();
                 });
@@ -1782,6 +1803,7 @@ internal sealed class AgentPanelControl : UserControl
             _turnStart = DateTime.UtcNow;
             _lastEventAt = DateTime.UtcNow;
             _turnTokens = 0;
+            _turnThinkingTokens = 0;
             _workingStrip.Visibility = Visibility.Visible;
             UpdateWorkingStrip();
             _elapsedTimer.Start();
@@ -1806,10 +1828,70 @@ internal sealed class AgentPanelControl : UserControl
 
         string line = string.Format("{0}  {1}s  \u00B7  {2} {3}", WorkingVerb(secs), secs, tokens, Loc("tokens"));
 
+        // Reasoning is billed and invisible; while it is running it is the only thing being spent.
+        if (_turnThinkingTokens > 0)
+        {
+            line += "  \u00B7  " + Compact(_turnThinkingTokens) + " " + Loc("thinkingTokens");
+        }
+
         int quiet = (int)(DateTime.UtcNow - _lastEventAt).TotalSeconds;
         if (_lastEventAt != default(DateTime) && quiet >= 25) line += "  \u00B7  " + Loc("stalled");
 
         _workingLabel.Text = line;
+    }
+
+    // Running totals for the panel's lifetime, shown in the usage card. The per-turn footer answers
+    // "what did that cost"; this answers "what has this session cost so far", which is the question
+    // that used to have no answer anywhere once the status line had moved on.
+    private void AccumulateSession(TurnUsage usage)
+    {
+        _sessionUsage.InputTokens += usage.InputTokens;
+        _sessionUsage.OutputTokens += usage.OutputTokens;
+        _sessionUsage.CacheReadTokens += usage.CacheReadTokens;
+        _sessionUsage.CacheWriteTokens += usage.CacheWriteTokens;
+        _sessionUsage.ThinkingTokens += usage.ThinkingTokens;
+        _sessionUsage.DurationMs += usage.DurationMs;
+        _sessionTurns++;
+    }
+
+    // A token count at a glance: exact while it is small, thousands once it is not.
+    private static string Compact(int count) => count >= 1000
+        ? string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}k", count / 1000.0)
+        : count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    // What a finished turn cost, written into the transcript rather than into the status bar.
+    //
+    // The working strip is gone the moment the turn ends and the status line is overwritten by the
+    // next thing that happens, so until now the only record of what a turn spent disappeared within
+    // seconds of it being produced. Here it stays next to the answer it paid for.
+    private void AddTurnFooter(TurnUsage usage, double? cost)
+    {
+        var parts = new System.Collections.Generic.List<string>();
+
+        if (usage.DurationMs > 0)
+        {
+            parts.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}s", usage.DurationMs / 1000.0));
+        }
+        if (usage.OutputTokens > 0) parts.Add(Loc("outTokens") + " " + Compact(usage.OutputTokens));
+        if (usage.ThinkingTokens > 0) parts.Add(Loc("thinkingTokens") + " " + Compact(usage.ThinkingTokens));
+        if (usage.InputTokens > 0) parts.Add(Loc("inTokens") + " " + Compact(usage.InputTokens));
+        // Cache reads are most of the traffic on a long chat and a fraction of the price; shown, but
+        // never added into the same figure as what was actually billed at full rate.
+        if (usage.CacheReadTokens > 0) parts.Add(Loc("cacheTokens") + " " + Compact(usage.CacheReadTokens));
+        if (cost.HasValue) parts.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, "${0:0.0000}", cost.Value));
+
+        if (parts.Count == 0) return;
+
+        var line = new TextBlock
+        {
+            Text = string.Join("  ·  ", parts),
+            FontSize = 10,
+            Opacity = 0.45,
+            Margin = new Thickness(14, 0, 8, 6),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        line.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        _messages.Children.Add(line);
     }
 
     // One of the language's working verbs, changing every few seconds. Falls back to the plain
@@ -2894,8 +2976,6 @@ internal sealed class AgentPanelControl : UserControl
     // answers it without being read.
     private void ShowUsageCard(UIElement anchor)
     {
-        if (_lastUsage == null) return;
-
         var stack = new StackPanel { MinWidth = 260 };
         var title = new TextBlock
         {
@@ -2907,12 +2987,48 @@ internal sealed class AgentPanelControl : UserControl
         title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         stack.Children.Add(title);
 
-        foreach (RateLimitWindow w in _lastUsage.Windows) stack.Children.Add(BuildUsageBar(w));
-
-        if (_lastUsage.Warning)
+        if (_lastUsage == null)
         {
-            var warn = new TextBlock { Text = Loc("limitNear"), FontSize = 10.5, Foreground = Accent, Margin = new Thickness(0, 4, 0, 0) };
-            stack.Children.Add(warn);
+            var none = new TextBlock { Text = Loc("limitUnknown"), FontSize = 11, Opacity = 0.6, Margin = new Thickness(0, 0, 0, 8) };
+            none.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            stack.Children.Add(none);
+        }
+        else
+        {
+            foreach (RateLimitWindow w in _lastUsage.Windows) stack.Children.Add(BuildUsageBar(w));
+
+            if (_lastUsage.Warning)
+            {
+                var warn = new TextBlock { Text = Loc("limitNear"), FontSize = 10.5, Foreground = Accent, Margin = new Thickness(0, 4, 0, 0) };
+                stack.Children.Add(warn);
+            }
+        }
+
+        // What this panel has spent since it opened - the subscription windows above are the whole
+        // account's, which does not tell the developer what this conversation is responsible for.
+        if (_sessionTurns > 0)
+        {
+            var rule = new Border { Height = 1, Margin = new Thickness(0, 8, 0, 8), Opacity = 0.25 };
+            rule.SetResourceReference(Border.BackgroundProperty, VsBrushes.ToolWindowBorderKey);
+            stack.Children.Add(rule);
+
+            var heading = new TextBlock
+            {
+                Text = string.Format(Loc("sessionTotals"), _sessionTurns),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 5),
+            };
+            heading.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            stack.Children.Add(heading);
+
+            stack.Children.Add(UsageRow(Loc("outTokens"), Compact(_sessionUsage.OutputTokens)));
+            if (_sessionUsage.ThinkingTokens > 0) stack.Children.Add(UsageRow(Loc("thinkingTokens"), Compact(_sessionUsage.ThinkingTokens)));
+            stack.Children.Add(UsageRow(Loc("inTokens"), Compact(_sessionUsage.InputTokens)));
+            stack.Children.Add(UsageRow(Loc("cacheTokens"), Compact(_sessionUsage.CacheReadTokens)));
+            stack.Children.Add(UsageRow(
+                Loc("session"),
+                string.Format(System.Globalization.CultureInfo.InvariantCulture, "${0:0.0000}", _sessionCost)));
         }
 
         ShowCardPopup(anchor, stack);
@@ -3069,6 +3185,23 @@ internal sealed class AgentPanelControl : UserControl
             AllowsTransparency = true,
             Child = card,
         }.IsOpen = true;
+    }
+
+    // A label on the left, its figure right-aligned, so a column of them lines up.
+    private UIElement UsageRow(string label, string value)
+    {
+        var row = new DockPanel { Margin = new Thickness(0, 0, 0, 3) };
+
+        var name = new TextBlock { Text = label, FontSize = 11, Opacity = 0.7 };
+        name.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var figure = new TextBlock { Text = value, FontSize = 11, FontFamily = MonoFont };
+        figure.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        DockPanel.SetDock(figure, Dock.Right);
+
+        row.Children.Add(figure);
+        row.Children.Add(name);
+        return row;
     }
 
     // One window: its name, its percentage, a filled bar, and when it resets.

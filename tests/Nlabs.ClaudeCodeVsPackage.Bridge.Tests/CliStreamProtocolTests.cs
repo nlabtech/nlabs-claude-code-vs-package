@@ -66,6 +66,39 @@ public class CliStreamProtocolTests
     }
 
     [Fact]
+    public void A_result_reports_what_the_turn_consumed()
+    {
+        var e = CliStreamProtocol.Parse(
+            "{\"type\":\"result\",\"subtype\":\"success\",\"duration_ms\":8300,\"total_cost_usd\":0.02," +
+            "\"usage\":{\"input_tokens\":12,\"output_tokens\":340,\"cache_read_input_tokens\":36578," +
+            "\"cache_creation_input_tokens\":900,\"output_tokens_details\":{\"thinking_tokens\":153}}}");
+
+        Assert.Equal(12, e.Usage!.InputTokens);
+        Assert.Equal(340, e.Usage.OutputTokens);
+        Assert.Equal(36578, e.Usage.CacheReadTokens);
+        Assert.Equal(900, e.Usage.CacheWriteTokens);
+        Assert.Equal(153, e.Usage.ThinkingTokens);
+        Assert.Equal(8300, e.Usage.DurationMs);
+        // Cached reads are traffic, not spend, and must not be folded into what was billed.
+        Assert.Equal(12 + 340 + 900, e.Usage.BilledTokens);
+    }
+
+    [Fact]
+    public void A_result_without_a_usage_block_reports_none()
+    {
+        Assert.Null(CliStreamProtocol.Parse("{\"type\":\"result\",\"subtype\":\"success\"}").Usage);
+    }
+
+    [Fact]
+    public void Reasoning_spend_is_reported_while_it_is_still_happening()
+    {
+        var e = CliStreamProtocol.Parse(
+            "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":153,\"estimated_tokens_delta\":3}");
+
+        Assert.Equal(153, e.ThinkingTokens);
+    }
+
+    [Fact]
     public void Reasoning_arrives_on_its_own_channel_and_never_as_reply_text()
     {
         var delta = CliStreamProtocol.Parse(

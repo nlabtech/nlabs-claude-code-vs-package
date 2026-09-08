@@ -93,6 +93,28 @@ public sealed class RateLimitStatus
     }
 }
 
+/// <summary>
+/// What one turn consumed, as the CLI reports it when the turn ends.
+///
+/// Cached input is kept apart from fresh input on purpose: on a long conversation it is most of the
+/// traffic and a fraction of the price, so folding it into one "tokens" figure would make every turn
+/// look far more expensive than it was.
+/// </summary>
+public sealed class TurnUsage
+{
+    public int InputTokens { get; set; }
+    public int OutputTokens { get; set; }
+    public int CacheReadTokens { get; set; }
+    public int CacheWriteTokens { get; set; }
+    /// <summary>Of the output tokens, how many were reasoning.</summary>
+    public int ThinkingTokens { get; set; }
+    /// <summary>Wall-clock time the turn took, in milliseconds; 0 when the CLI did not say.</summary>
+    public int DurationMs { get; set; }
+
+    /// <summary>Everything billed as output plus everything billed as fresh input.</summary>
+    public int BilledTokens => InputTokens + OutputTokens + CacheWriteTokens;
+}
+
 /// <summary>One parsed event from the CLI's stream-json output.</summary>
 public sealed class CliEvent
 {
@@ -114,6 +136,12 @@ public sealed class CliEvent
 
     /// <summary>Running output-token count from a streaming message_delta; null when the line carries none.</summary>
     public int? OutputTokens { get; set; }
+
+    /// <summary>Running estimate of reasoning tokens spent so far in this turn; null on other lines.</summary>
+    public int? ThinkingTokens { get; set; }
+
+    /// <summary>What the finished turn consumed; null except on a result line.</summary>
+    public TurnUsage? Usage { get; set; }
 
     /// <summary>The agent's to-do list when this assistant turn wrote one; null otherwise.</summary>
     public System.Collections.Generic.IReadOnlyList<TodoItem>? Todos { get; set; }
@@ -205,6 +233,20 @@ public static class CliStreamProtocol
         switch (type)
         {
             case "system":
+                // While Claude reasons, the CLI reports a running estimate of what that reasoning is
+                // costing. It is the only token figure available before the turn ends, and without it
+                // a long think is spend the developer cannot see happening.
+                if ((string?)obj["subtype"] == "thinking_tokens")
+                {
+                    return new CliEvent
+                    {
+                        Kind = CliEventKind.SystemInit,
+                        ThinkingTokens = (int?)obj["estimated_tokens"],
+                        SessionId = (string?)obj["session_id"],
+                        Raw = line,
+                    };
+                }
+
                 return new CliEvent
                 {
                     Kind = CliEventKind.SystemInit,
@@ -248,6 +290,7 @@ public static class CliStreamProtocol
                     TotalCostUsd = (double?)obj["total_cost_usd"],
                     IsError = (bool?)obj["is_error"] ?? !string.Equals((string?)obj["subtype"], "success", StringComparison.Ordinal),
                     Text = (string?)obj["result"],
+                    Usage = ParseTurnUsage(obj),
                     Raw = line,
                 };
 
@@ -416,6 +459,24 @@ public static class CliStreamProtocol
     {
         if (evt == null) return null;
         return (string?)evt["delta"]?["text"];
+    }
+
+    // The usage block of a result line. Absent or partial input is normal - an errored turn reports
+    // less - so every field falls back to zero rather than making the whole reading unavailable.
+    private static TurnUsage? ParseTurnUsage(JObject obj)
+    {
+        var usage = obj["usage"] as JObject;
+        if (usage == null) return null;
+
+        return new TurnUsage
+        {
+            InputTokens = (int?)usage["input_tokens"] ?? 0,
+            OutputTokens = (int?)usage["output_tokens"] ?? 0,
+            CacheReadTokens = (int?)usage["cache_read_input_tokens"] ?? 0,
+            CacheWriteTokens = (int?)usage["cache_creation_input_tokens"] ?? 0,
+            ThinkingTokens = (int?)usage["output_tokens_details"]?["thinking_tokens"] ?? 0,
+            DurationMs = (int?)obj["duration_ms"] ?? (int?)obj["duration_api_ms"] ?? 0,
+        };
     }
 
     // Reasoning arrives on its own channel: a thinking_delta puts it at event.delta.thinking, never
