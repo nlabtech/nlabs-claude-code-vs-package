@@ -162,6 +162,11 @@ internal sealed class AgentPanelControl : UserControl
                 ["thinking"] = "Thinking...", ["thoughtFor"] = "Thought for {0}s",
                 ["thinkingTokens"] = "thinking", ["outTokens"] = "out", ["inTokens"] = "in",
                 ["cacheTokens"] = "cached", ["sessionTotals"] = "This session ({0} turns)",
+                ["approveQueued"] = "{0} more waiting", ["approveAll"] = "Allow all waiting",
+                ["gateNormal"] = "Approval: normal", ["gateFull"] = "Approval: full control", ["gateFree"] = "Approval: hands off",
+                ["gateNormalTip"] = "Asks before anything that changes files or runs a command, and waves through ordinary reads - click to change",
+                ["gateFullTip"] = "Asks before every single call, including reads - click to change",
+                ["gateFreeTip"] = "Asks for nothing; what Claude did is still written into the chat - click to change",
                 ["newChat"] = "New chat - type a message to begin.",
                 ["switched"] = "Switched - your next message resumes this chat.", ["tasks"] = "Tasks",
                 ["copy"] = "Copy", ["copied"] = "Copied", ["session"] = "session",
@@ -238,6 +243,11 @@ internal sealed class AgentPanelControl : UserControl
                 ["thinking"] = "Dusunuyor...", ["thoughtFor"] = "{0} sn dusundu",
                 ["thinkingTokens"] = "dusunme", ["outTokens"] = "cikis", ["inTokens"] = "giris",
                 ["cacheTokens"] = "onbellek", ["sessionTotals"] = "Bu oturum ({0} tur)",
+                ["approveQueued"] = "{0} tane daha bekliyor", ["approveAll"] = "Bekleyenlerin hepsine izin ver",
+                ["gateNormal"] = "Onay: normal", ["gateFull"] = "Onay: tam kontrol", ["gateFree"] = "Onay: eller serbest",
+                ["gateNormalTip"] = "Dosya degistiren ya da komut calistiran her seyden once sorar, siradan okumalari gecirir - degistirmek icin tikla",
+                ["gateFullTip"] = "Okumalar dahil her cagridan once sorar - degistirmek icin tikla",
+                ["gateFreeTip"] = "Hicbir sey sormaz; Claude'un ne yaptigi yine sohbete yazilir - degistirmek icin tikla",
                 ["newChat"] = "Yeni sohbet - baslamak icin bir mesaj yaz.",
                 ["switched"] = "Gecildi - sonraki mesajin bu sohbeti surdurur.", ["tasks"] = "Gorevler",
                 ["copy"] = "Kopyala", ["copied"] = "Kopyalandi", ["session"] = "oturum",
@@ -337,6 +347,9 @@ internal sealed class AgentPanelControl : UserControl
     private readonly TurnUsage _sessionUsage = new TurnUsage(); // what this panel has spent since it opened
     private int _sessionTurns;
     private int _turnThinkingTokens; // live reasoning estimate for the turn in flight
+    private string _gate = "normal";  // how much the panel asks before Claude acts
+    private Border? _gateButton;
+    private TextBlock? _gateLabel;
     private Grid? _scrim;            // the dimmed layer a confirmation is drawn on
     private string _thinkingText = string.Empty;
     private Border? _thinkingBox;
@@ -810,8 +823,14 @@ internal sealed class AgentPanelControl : UserControl
 #pragma warning restore VSTHRD010
         Bind(() => reviewLabel.Text = Loc("review"));
 
+        // How much the panel asks before Claude acts. It sits in the status bar rather than in
+        // Options because it is changed mid-task, not configured once.
+        _gateButton = BuildStatusButton(IconPermission, CycleGate, out _gateLabel);
+        Bind(UpdateGateButton);
+
         var leftStatus = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         leftStatus.Children.Add(folderButton);
+        leftStatus.Children.Add(_gateButton);
         leftStatus.Children.Add(undoButton);
         leftStatus.Children.Add(reviewButton);
 
@@ -2315,8 +2334,49 @@ internal sealed class AgentPanelControl : UserControl
         OnUi(() =>
         {
             if (_alwaysAllow.Contains(req.ToolName)) { _approval?.Resolve(id, true); return; }
+            if (PassesGate(req)) { _approval?.Resolve(id, true); return; }
             ShowApprovalCard(id, req);
         });
+    }
+
+    // Whether a call goes through without being put to the developer.
+    //
+    // "Full control" asks about everything. "Normal" asks only where it matters - a call the risk
+    // grader rates low is an ordinary read or an edit inside the folder, and stopping on those is
+    // what trains people to click Allow without reading. "Hands off" asks nothing.
+    //
+    // A plan is never waved through at any level: approving a plan is not a permission, it is the
+    // decision to start, and taking it silently would be the panel choosing on the developer's behalf.
+    private bool PassesGate(HookRequest req)
+    {
+        if (req.ToolName == "ExitPlanMode") return false;
+        if (_gate == GateFull) return false;
+        if (_gate == GateFree) return true;
+        return RiskAssessor.Assess(req.ToolName, req.InputPreview).Level == RiskLevel.Low;
+    }
+
+    private const string GateNormal = "normal";
+    private const string GateFull = "full";
+    private const string GateFree = "free";
+
+    // Cycles normal -> full control -> hands off -> normal.
+    private void CycleGate()
+    {
+        _gate = _gate == GateNormal ? GateFull : _gate == GateFull ? GateFree : GateNormal;
+        UpdateGateButton();
+        SavePreferences();
+    }
+
+    private void UpdateGateButton()
+    {
+        if (_gateLabel == null) return;
+        string key = _gate == GateFull ? "gateFull" : _gate == GateFree ? "gateFree" : "gateNormal";
+        _gateLabel.Text = Loc(key);
+        if (_gateButton != null) _gateButton.ToolTip = Loc(key + "Tip");
+
+        // Hands off is the one setting where nothing will stop a mistake, so it says so in colour.
+        _gateLabel.Foreground = _gate == GateFree ? HighRisk : _gateLabel.Foreground;
+        if (_gate != GateFree) _gateLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
     }
 
     // The approval card. A normal tool shows its name and parameters with Allow / Deny / Always. When
@@ -2436,6 +2496,36 @@ internal sealed class AgentPanelControl : UserControl
             {
                 buttons.Children.Add(MakeGhostButtonText(Loc("always"), () => Decide(true, true, "allowed")));
             }
+
+            // A turn that edits a dozen files asks a dozen times. Say how many are waiting, and offer
+            // to answer them together - clicking through them one by one is how people stop reading.
+            int waiting = (_approval?.PendingCount ?? 1) - 1;
+            if (waiting > 0)
+            {
+                var queued = new TextBlock
+                {
+                    Text = string.Format(Loc("approveQueued"), waiting),
+                    FontSize = 10.5,
+                    Opacity = 0.6,
+                    Margin = new Thickness(8, 0, 8, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                queued.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+                buttons.Children.Add(queued);
+
+                // Never offered on a high-risk call: "apply all" would carry that one along with the
+                // harmless ones, which is the opposite of what the risk grade is for.
+                if (risk.Level != RiskLevel.High)
+                {
+                    buttons.Children.Add(MakeGhostButtonText(Loc("approveAll"), () =>
+                    {
+                        _approval?.ResolveAll(true);
+                        buttons.Children.Clear();
+                        note.Text = Loc("allowed");
+                        buttons.Children.Add(note);
+                    }));
+                }
+            }
         }
 
         _messages.Children.Add(card);
@@ -2534,6 +2624,10 @@ internal sealed class AgentPanelControl : UserControl
         int ai = Array.FindIndex(Accents, a => a.Name == p.Accent);
         ApplyAccent(Accents[ai < 0 ? 0 : ai].Color);
 
+        // Anything unrecognised lands on asking, never on silence.
+        _gate = p.Gate == GateFull || p.Gate == GateFree ? p.Gate : GateNormal;
+        UpdateGateButton();
+
         _prefsLoaded = true;
     }
 
@@ -2544,6 +2638,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             Language = _lang,
             Accent = (_accentCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "Claude",
+            Gate = _gate,
         });
     }
 

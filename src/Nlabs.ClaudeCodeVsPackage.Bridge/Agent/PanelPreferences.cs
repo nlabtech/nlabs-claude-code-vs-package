@@ -9,6 +9,13 @@ public sealed class PanelPreferences
 {
     public string Language { get; set; } = "en";
     public string Accent { get; set; } = "Claude";
+
+    /// <summary>
+    /// How much the panel asks before Claude acts: <c>normal</c>, <c>full</c> or <c>free</c>.
+    /// Stored because it is a working habit, not a per-conversation choice - and it defaults to
+    /// <c>normal</c>, so an unreadable or older preferences file lands on asking, never on silence.
+    /// </summary>
+    public string Gate { get; set; } = "normal";
 }
 
 /// <summary>

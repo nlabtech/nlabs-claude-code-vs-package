@@ -56,6 +56,21 @@ public sealed class ApprovalService : IDisposable
         }
     }
 
+    /// <summary>How many calls are still waiting for an answer, the one being shown included.</summary>
+    public int PendingCount => _pending.Count;
+
+    /// <summary>
+    /// Answers everything currently waiting the same way. A turn that edits a dozen files asks a
+    /// dozen times, and clicking through them one at a time is how a developer stops reading them.
+    /// </summary>
+    public void ResolveAll(bool allow, string? reason = null)
+    {
+        foreach (string id in _pending.Keys)
+        {
+            Resolve(id, allow, reason);
+        }
+    }
+
     private async Task AcceptLoopAsync()
     {
         while (_listener.IsListening)
