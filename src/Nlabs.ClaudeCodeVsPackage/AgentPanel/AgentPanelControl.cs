@@ -143,6 +143,10 @@ internal sealed class AgentPanelControl : UserControl
                 ["review"] = "Review", ["bridgeOn"] = "Approvals on", ["bridgeOff"] = "Approvals off",
                 ["riskLow"] = "Low risk", ["riskMedium"] = "Changes files", ["riskHigh"] = "High risk",
                 ["newModel"] = "The CLI offers a newer model: {0}",
+                ["micHint"] = "Dictate a message", ["recording"] = "Recording - click the mic again to stop.",
+                ["transcribing"] = "Transcribing...", ["micFailed"] = "No microphone was available.",
+                ["sttNotSet"] = "Set a speech-to-text command in Tools > Options > Claude Code (nLabtech).",
+                ["sttFailed"] = "The speech-to-text command failed.", ["sttEmpty"] = "Nothing was recognised.",
                 ["reviewPrompt"] = "Review my current uncommitted changes for bugs, security issues, and simple cleanups. Do not modify any files - just report your findings.",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
@@ -172,6 +176,10 @@ internal sealed class AgentPanelControl : UserControl
                 ["review"] = "Denetle", ["bridgeOn"] = "Onaylar acik", ["bridgeOff"] = "Onaylar kapali",
                 ["riskLow"] = "Dusuk risk", ["riskMedium"] = "Dosya degistirir", ["riskHigh"] = "Yuksek risk",
                 ["newModel"] = "CLI'de daha yeni model var: {0}",
+                ["micHint"] = "Sesle yaz", ["recording"] = "Kayitta - durdurmak icin mikrofona tekrar bas.",
+                ["transcribing"] = "Yaziya cevriliyor...", ["micFailed"] = "Mikrofon bulunamadi.",
+                ["sttNotSet"] = "Tools > Options > Claude Code (nLabtech) altinda konusma-yazi komutunu ayarla.",
+                ["sttFailed"] = "Konusma-yazi komutu basarisiz oldu.", ["sttEmpty"] = "Hicbir sey anlasilmadi.",
                 ["reviewPrompt"] = "Commit edilmemis mevcut degisikliklerimi hata, guvenlik sorunu ve basit iyilestirmeler icin incele. Hicbir dosyayi degistirme - sadece bulgulari raporla.",
             },
         };
@@ -202,6 +210,8 @@ internal sealed class AgentPanelControl : UserControl
     private readonly PanelPreferencesStore _prefs = new PanelPreferencesStore();
     private bool _prefsLoaded; // suppresses saves while the constructor applies the stored choices
     private bool _modelCheckDone; // the model-staleness check runs once per panel
+    private readonly VoiceRecorder _recorder = new VoiceRecorder();
+    private Border? _micButton;
     private string _workspaceKey = string.Empty;
     private string? _workingFolder;    // an explicit working folder chosen when no solution is open
     private TextBlock? _folderLabel;
@@ -542,6 +552,8 @@ internal sealed class AgentPanelControl : UserControl
         agentButton = MakeIconButton("@", "pickAgent", () => ShowSubagentMenu(agentButton));
         leftTools.Children.Add(agentButton);
 #pragma warning restore VSTHRD010
+        _micButton = MakeIconButton("\U0001F3A4", "micHint", () => _ = ToggleDictationAsync());
+        leftTools.Children.Add(_micButton);
 
         // Right of the toolbar: the selectors kept tight against the primary button, so a narrow
         // panel never wraps them away from it.
@@ -2425,6 +2437,71 @@ internal sealed class AgentPanelControl : UserControl
         SaveConversations();
     }
 
+    // --- Dictation -----------------------------------------------------------------------------
+
+    // Click to record, click again to transcribe. The extension records; the developer's own
+    // speech-to-text command turns it into text, so nothing is bundled and no audio leaves the
+    // machine unless their chosen engine sends it.
+    private async System.Threading.Tasks.Task ToggleDictationAsync()
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+        if (_recorder.IsRecording)
+        {
+            SetMicActive(false);
+            string? wav = _recorder.StopAndSave();
+            if (wav == null) { _status.Text = Loc("micFailed"); return; }
+            await TranscribeAsync(wav);
+            return;
+        }
+
+        if (!SpeechCommand.IsConfigured(ExtensionOptions.SpeechToTextCommand))
+        {
+            _status.Text = Loc("sttNotSet");
+            return;
+        }
+
+        if (!_recorder.Start()) { _status.Text = Loc("micFailed"); return; }
+        SetMicActive(true);
+        _status.Text = Loc("recording");
+    }
+
+    // Runs the configured engine over the recording and drops the text into the input. The WAV is
+    // deleted either way - a stray recording of the developer's voice must not linger in temp.
+    private async System.Threading.Tasks.Task TranscribeAsync(string wavPath)
+    {
+        _status.Text = Loc("transcribing");
+        try
+        {
+            var (fileName, arguments) = SpeechCommand.Compose(ExtensionOptions.SpeechToTextCommand, wavPath);
+            var (ok, output) = await RunProcessAsync(fileName, arguments, System.IO.Path.GetTempPath());
+            string text = ok ? SpeechCommand.CleanTranscript(output) : string.Empty;
+
+            if (text.Length == 0)
+            {
+                _status.Text = Loc(ok ? "sttEmpty" : "sttFailed");
+                return;
+            }
+
+            string existing = _input.Text ?? string.Empty;
+            _input.Text = existing.Length == 0 ? text : existing.TrimEnd() + " " + text;
+            _input.CaretIndex = _input.Text.Length;
+            _input.Focus();
+            _status.Text = Loc("hello");
+        }
+        finally
+        {
+            try { if (System.IO.File.Exists(wavPath)) System.IO.File.Delete(wavPath); } catch { }
+        }
+    }
+
+    // The mic button carries the recording state: filled accent while live, quiet otherwise.
+    private void SetMicActive(bool active)
+    {
+        if (_micButton == null) return;
+        _micButton.Background = active ? Accent : Brushes.Transparent;
+    }
+
     // --- Subagents -----------------------------------------------------------------------------
 
     // Opens a menu of the subagents defined for this project and the developer, anchored to the button.
@@ -2768,6 +2845,7 @@ internal sealed class AgentPanelControl : UserControl
 
     public void ShutDown()
     {
+        _recorder.Dispose(); // a live recording must not outlive the panel
         _session?.Dispose();
         _session = null;
         _approval?.Dispose();

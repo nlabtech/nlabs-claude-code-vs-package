@@ -15,6 +15,7 @@ namespace Nlabs.ClaudeCodeVsPackage;
 internal sealed class ExtensionOptionsPage : DialogPage
 {
     private string _claudeCliPath = string.Empty;
+    private string _speechToTextCommand = string.Empty;
     private bool _maskSecrets = true;
     private bool _startBridgeOnLoad = true;
 
@@ -34,6 +35,15 @@ internal sealed class ExtensionOptionsPage : DialogPage
     {
         get => _maskSecrets;
         set { _maskSecrets = value; Apply(); }
+    }
+
+    [Category("Claude Code")]
+    [DisplayName("Speech-to-text command")]
+    [Description("Command that transcribes a WAV file and prints the text, with {audio} where the file path goes - for example: whisper-cli -m model.bin -f \"{audio}\". Leave empty to disable dictation. No speech engine is bundled: you choose the one you trust.")]
+    public string SpeechToTextCommand
+    {
+        get => _speechToTextCommand;
+        set { _speechToTextCommand = value ?? string.Empty; Apply(); }
     }
 
     [Category("Claude Code")]
@@ -57,7 +67,8 @@ internal sealed class ExtensionOptionsPage : DialogPage
         Apply();
     }
 
-    private void Apply() => ExtensionOptions.Update(_claudeCliPath, _maskSecrets, _startBridgeOnLoad);
+    private void Apply() =>
+        ExtensionOptions.Update(_claudeCliPath, _speechToTextCommand, _maskSecrets, _startBridgeOnLoad);
 }
 
 /// <summary>
@@ -68,12 +79,14 @@ internal sealed class ExtensionOptionsPage : DialogPage
 internal static class ExtensionOptions
 {
     public static string ClaudeCliPath { get; private set; } = string.Empty;
+    public static string SpeechToTextCommand { get; private set; } = string.Empty;
     public static bool MaskSecrets { get; private set; } = true;
     public static bool StartBridgeOnLoad { get; private set; } = true;
 
-    public static void Update(string? claudeCliPath, bool maskSecrets, bool startBridgeOnLoad)
+    public static void Update(string? claudeCliPath, string? speechToTextCommand, bool maskSecrets, bool startBridgeOnLoad)
     {
         ClaudeCliPath = claudeCliPath ?? string.Empty;
+        SpeechToTextCommand = speechToTextCommand ?? string.Empty;
         MaskSecrets = maskSecrets;
         StartBridgeOnLoad = startBridgeOnLoad;
 
