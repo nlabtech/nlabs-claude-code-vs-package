@@ -75,6 +75,15 @@
     </None>
   </ItemGroup>
 
+  <!-- The Marketplace / extension icon referenced by the manifest's <Icon>. The VSSDK collects
+       Content items flagged IncludeInVSIX into the package root; it adds nothing to the loaded
+       assemblies. (None + IncludeInVSIX is not honoured by this build-tools version.) -->
+  <ItemGroup>
+    <Content Include="icon.png">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+  </ItemGroup>
+
   <!-- The command table. ResourceName MUST be "Menus.ctmenu" to match the package's
        [ProvideMenuResource("Menus.ctmenu", 1)]. VSCTCompile compiles the .vsct into the
        embedded .ctmenu resource; SDK globbing would otherwise treat it as plain None. -->

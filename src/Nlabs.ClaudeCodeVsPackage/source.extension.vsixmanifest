@@ -10,6 +10,7 @@
     <DisplayName>Claude Code for Visual Studio (nLabtech)</DisplayName>
     <Description xml:space="preserve">An independent bridge extension that connects the solution open in Visual Studio to the Claude Code CLI. Not officially affiliated with Anthropic or Microsoft.</Description>
     <MoreInfo>https://github.com/nlabtech/nlabs-claude-code-vs-package</MoreInfo>
+    <Icon>icon.png</Icon>
     <Tags>claude, ai, cli, productivity, bridge</Tags>
   </Metadata>
 
