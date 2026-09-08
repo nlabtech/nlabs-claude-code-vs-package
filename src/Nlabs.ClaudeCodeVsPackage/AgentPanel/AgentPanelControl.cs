@@ -171,6 +171,11 @@ internal sealed class AgentPanelControl : UserControl
                 ["bypassMode"] = "Bypass permissions",
                 ["imageZoom"] = "Click to see it full size", ["imageTooMany"] = "Up to {0} images per message.",
                 ["agentProject"] = "This project", ["agentUser"] = "Yours",
+                ["queued"] = "Queued - it will send when the current turn ends.",
+                ["cliMissing"] = "The Claude CLI was not found. Install it, or set its path in Tools > Options > Claude Code (nLabtech).",
+                ["cliStart"] = "The Claude CLI could not be started:", ["cliLost"] = "The session ended.",
+                ["turnFailed"] = "Turn failed.",
+                ["deleteConfirm"] = "Delete this chat and its messages? This cannot be undone.",
                 ["emptyTitle"] = "Claude Code, in Visual Studio",
                 ["emptyBody"] = "Ask a question, describe a change, or hand over a task. Claude works in the folder shown below and asks before it runs anything.",
                 ["hintSlash"] = "commands - the panel's own and the CLI's",
@@ -234,6 +239,11 @@ internal sealed class AgentPanelControl : UserControl
                 ["bypassMode"] = "Izinleri atla",
                 ["imageZoom"] = "Tam boyut icin tikla", ["imageTooMany"] = "Mesaj basina en fazla {0} gorsel.",
                 ["agentProject"] = "Bu proje", ["agentUser"] = "Senin",
+                ["queued"] = "Sirada - bu tur bitince gonderilecek.",
+                ["cliMissing"] = "Claude CLI bulunamadi. Kur ya da yolunu Tools > Options > Claude Code (nLabtech) altinda ayarla.",
+                ["cliStart"] = "Claude CLI baslatilamadi:", ["cliLost"] = "Oturum sona erdi.",
+                ["turnFailed"] = "Tur basarisiz oldu.",
+                ["deleteConfirm"] = "Bu sohbet ve mesajlari silinsin mi? Geri alinamaz.",
                 ["emptyTitle"] = "Visual Studio icinde Claude Code",
                 ["emptyBody"] = "Bir soru sor, bir degisiklik anlat ya da isi devret. Claude asagida yazan klasorde calisir ve bir sey calistirmadan once sorar.",
                 ["hintSlash"] = "komutlar - panelin kendi komutlari ve CLI'ninkiler",
@@ -836,7 +846,7 @@ internal sealed class AgentPanelControl : UserControl
         if (_busy)
         {
             _queue.Enqueue(new PendingTurn { Text = text, Images = payload });
-            _status.Text = "Queued - it will send when the current turn ends.";
+            _status.Text = Loc("queued");
             return;
         }
 
@@ -871,8 +881,20 @@ internal sealed class AgentPanelControl : UserControl
         catch (Exception ex)
         {
             SetBusy(false);
-            _status.Text = "Could not reach the Claude CLI: " + ex.Message;
+            _status.Text = DescribeCliFailure(ex);
         }
+    }
+
+    // "Not installed" and "installed but refused to start" are the same sentence in most panels, and
+    // they need opposite things from the developer - so they get different ones here.
+    private string DescribeCliFailure(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
+        {
+            if (e is System.ComponentModel.Win32Exception win32 && win32.NativeErrorCode == 2)
+                return Loc("cliMissing");
+        }
+        return Loc("cliStart") + " " + ex.Message;
     }
 
     // Creates the CLI session the first time, in the open solution's directory.
@@ -891,7 +913,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             if (!ReferenceEquals(_session, session)) return;
             SetBusy(false);
-            _status.Text = "Session ended.";
+            _status.Text = Loc("cliLost");
         });
         _session = session;
         ClaudeCliOptions options = CurrentOptions();
@@ -983,7 +1005,7 @@ internal sealed class AgentPanelControl : UserControl
                     {
                         _sessionCost += e.TotalCostUsd.Value;
                         _status.Text = e.IsError
-                            ? "Turn failed."
+                            ? Loc("turnFailed")
                             : string.Format("${0:0.0000} · {1} ${2:0.0000}", e.TotalCostUsd.Value, Loc("session"), _sessionCost);
                     }
                     SaveConversations();
@@ -1591,6 +1613,13 @@ internal sealed class AgentPanelControl : UserControl
     // Removes the current chat; keeps at least one around (clearing the last one just resets it).
     private void DeleteConversation()
     {
+        // A chat is the only record of what was asked and answered, and there is no undo for this.
+        if (MessageBox.Show(Loc("deleteConfirm"), Loc("delete"), MessageBoxButton.YesNo, MessageBoxImage.Warning)
+            != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
         if (_convCombo.Items.Count <= 1)
         {
             _current.Messages.Clear();
