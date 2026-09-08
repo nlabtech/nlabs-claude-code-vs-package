@@ -969,7 +969,7 @@ internal sealed class AgentPanelControl : UserControl
         line.Inlines.Add(new Run(call.Name) { FontWeight = FontWeights.SemiBold });
         if (!string.IsNullOrEmpty(call.Summary))
         {
-            var detail = new Run("  " + call.Summary) { FontFamily = MonoFont };
+            var detail = new Run("  " + SecretMasker.Redact(call.Summary)) { FontFamily = MonoFont };
             line.Inlines.Add(detail);
         }
         line.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
@@ -1068,7 +1068,7 @@ internal sealed class AgentPanelControl : UserControl
     {
         if (_streamingText.Length == 0) return;
         EnsureStreamingBubble();
-        _streamingTextBlock!.Text = _streamingText;
+        _streamingTextBlock!.Text = SecretMasker.Redact(_streamingText);
     }
 
     // Turns parsed markdown blocks into WPF elements: code as a selectable monospace box, headings
@@ -1076,6 +1076,9 @@ internal sealed class AgentPanelControl : UserControl
     private void RenderMarkdownInto(StackPanel container, string text)
     {
         container.Children.Clear();
+        // Redact at the display boundary: what Claude echoed may contain a key, and a screenshot of
+        // it would leak permanently. What was sent is untouched.
+        text = SecretMasker.Redact(text);
         foreach (MarkdownBlock block in MarkdownDocument.Parse(text))
         {
             switch (block.Kind)
@@ -1595,7 +1598,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             var preview = new TextBox
             {
-                Text = req.InputPreview,
+                Text = SecretMasker.Redact(req.InputPreview),
                 IsReadOnly = true,
                 BorderThickness = new Thickness(0),
                 Margin = new Thickness(0, 6, 0, 8),
