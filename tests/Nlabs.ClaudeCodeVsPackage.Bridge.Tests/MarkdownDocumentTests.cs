@@ -43,7 +43,7 @@ public class MarkdownDocumentTests
         Assert.Equal(0, blocks[0].Indent);
         Assert.Equal(1, blocks[1].Indent);
         Assert.Equal(2, blocks[2].Indent);
-        Assert.All(blocks, b => Assert.Equal("•", b.Marker));
+        Assert.All(blocks, b => Assert.Equal("\u2022", b.Marker));
     }
 
     [Fact]

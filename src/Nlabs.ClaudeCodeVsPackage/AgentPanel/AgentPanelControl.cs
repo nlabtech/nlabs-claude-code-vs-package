@@ -70,6 +70,15 @@ internal sealed class AgentPanelControl : UserControl
     private static readonly Brush CardFill = Frozen(Color.FromArgb(0x14, 0x80, 0x80, 0x80));
     // The one colour outside the accent: danger. A high-risk approval must not read as brand colour.
     private static readonly Brush HighRisk = Frozen(Color.FromRgb(0xC0, 0x39, 0x2B));
+    // Diff washes, kept faint for the same reason as CardFill: they have to sit on a light and a dark
+    // editor background without either one turning into a solid block of colour.
+    private static readonly Brush AddedFill = Frozen(Color.FromArgb(0x26, 0x3F, 0xB9, 0x50));
+    private static readonly Brush RemovedFill = Frozen(Color.FromArgb(0x26, 0xE5, 0x48, 0x4F));
+    private static readonly Brush AddedInk = Frozen(Color.FromRgb(0x2E, 0x9E, 0x44));
+    private static readonly Brush RemovedInk = Frozen(Color.FromRgb(0xC0, 0x39, 0x2B));
+    // Half-transparent grey for text that is present but secondary: it reads as quiet on either
+    // theme, which a fixed grey would not. Text elements cannot carry Opacity, so it has to be here.
+    private static readonly Brush Dim = Frozen(Color.FromArgb(0x8C, 0x80, 0x80, 0x80));
 
     // The accent choices. Claude's warm tone is the default; the rest are alternatives.
     private static readonly (string Name, Color Color)[] Accents =
@@ -178,6 +187,9 @@ internal sealed class AgentPanelControl : UserControl
                 ["copy"] = "Copy", ["copied"] = "Copied", ["session"] = "session",
                 ["allow"] = "Allow", ["deny"] = "Deny", ["always"] = "Always allow",
                 ["wantsToRun"] = "wants to run", ["allowed"] = "Allowed", ["denied"] = "Denied",
+                ["wantsToEdit"] = "wants to change", ["wantsToCreate"] = "wants to write",
+                ["wantsToRead"] = "wants to read", ["wantsToSearch"] = "wants to search",
+                ["wantsToFetch"] = "wants to fetch", ["diffHidden"] = "{0} unchanged lines",
                 ["edit"] = "Edit", ["accent"] = "Accent", ["attachHint"] = "Attach an image",
                 ["tokens"] = "tokens", ["defaultEffort"] = "Effort: default",
                 ["pickFolder"] = "Pick folder", ["folderSet"] = "Folder set - your next message starts here.",
@@ -270,6 +282,9 @@ internal sealed class AgentPanelControl : UserControl
                 ["copy"] = "Kopyala", ["copied"] = "Kopyalandi", ["session"] = "oturum",
                 ["allow"] = "Izin ver", ["deny"] = "Reddet", ["always"] = "Hep izin ver",
                 ["wantsToRun"] = "calistirmak istiyor", ["allowed"] = "Izin verildi", ["denied"] = "Reddedildi",
+                ["wantsToEdit"] = "degistirmek istiyor", ["wantsToCreate"] = "yazmak istiyor",
+                ["wantsToRead"] = "okumak istiyor", ["wantsToSearch"] = "aramak istiyor",
+                ["wantsToFetch"] = "getirmek istiyor", ["diffHidden"] = "{0} degismeyen satir",
                 ["edit"] = "Duzenle", ["accent"] = "Vurgu", ["attachHint"] = "Gorsel ekle",
                 ["tokens"] = "token", ["defaultEffort"] = "Efor: varsayilan",
                 ["pickFolder"] = "Klasor sec", ["folderSet"] = "Klasor secildi - sonraki mesajin burada baslar.",
@@ -2424,12 +2439,13 @@ internal sealed class AgentPanelControl : UserControl
         if (_gate != GateFree) _gateLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
     }
 
-    // The approval card. A normal tool shows its name and parameters with Allow / Deny / Always. When
-    // Claude presents a plan (ExitPlanMode in plan mode), it becomes a plan card: the plan rendered as
-    // markdown, with Apply (proceed) and Keep planning (refine) instead.
+    // The approval card. A normal tool shows what it is about to do - an edit as a diff, a command on
+    // a prompt line - with Allow / Deny / Always. When Claude presents a plan (ExitPlanMode in plan
+    // mode), it becomes a plan card: the plan rendered as markdown, with Apply and Keep planning.
     private void ShowApprovalCard(string id, HookRequest req)
     {
         bool isPlan = req.ToolName == "ExitPlanMode";
+        ApprovalPreview? shape = isPlan ? null : ApprovalPreview.Build(req.ToolName, req.InputPreview);
 
         var title = new TextBlock { FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
         if (isPlan)
@@ -2439,7 +2455,7 @@ internal sealed class AgentPanelControl : UserControl
         else
         {
             title.Inlines.Add(new Run(req.ToolName) { FontWeight = FontWeights.Bold, Foreground = Accent });
-            title.Inlines.Add(new Run(" " + Loc("wantsToRun")));
+            title.Inlines.Add(new Run(" " + Loc(shape!.TitleKey)));
         }
         title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
@@ -2472,21 +2488,7 @@ internal sealed class AgentPanelControl : UserControl
         }
         else
         {
-            var preview = new TextBox
-            {
-                Text = ExtensionOptions.ForDisplay(req.InputPreview),
-                IsReadOnly = true,
-                BorderThickness = new Thickness(0),
-                Margin = new Thickness(0, 6, 0, 8),
-                FontFamily = MonoFont,
-                FontSize = 12,
-                Background = Brushes.Transparent,
-                TextWrapping = TextWrapping.NoWrap,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-                MaxHeight = 160,
-            };
-            preview.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-            body = preview;
+            body = BuildApprovalBody(shape!);
         }
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal };
@@ -2575,6 +2577,218 @@ internal sealed class AgentPanelControl : UserControl
 
         _messages.Children.Add(card);
         ScrollToEnd();
+    }
+
+    // Draws a pending call in the shape it actually has: an edit as a diff, a command on a prompt
+    // line, a new file as its content, a lookup as the thing it names. Every call used to arrive as
+    // pretty-printed JSON, which renders the most consequential approval in the panel - an edit - as
+    // two quoted blobs with the newlines escaped.
+    private UIElement BuildApprovalBody(ApprovalPreview shape)
+    {
+        var stack = new StackPanel { Margin = new Thickness(0, 6, 0, 8) };
+
+        UIElement? caption = BuildPreviewCaption(shape);
+        if (caption != null) stack.Children.Add(caption);
+
+        switch (shape.Kind)
+        {
+            case PreviewKind.Diff:
+                stack.Children.Add(BuildDiffView(shape));
+                break;
+            case PreviewKind.Command:
+                stack.Children.Add(BuildCommandView(shape));
+                break;
+            case PreviewKind.Target:
+                if (shape.Text.Length > 0) stack.Children.Add(MonoBlock(shape.Text, 90, wrap: true));
+                break;
+            default:
+                stack.Children.Add(MonoBlock(shape.Text, 180, wrap: false));
+                break;
+        }
+
+        return stack;
+    }
+
+    // The line above the preview: which file the call touches, and how much of it changes.
+    private UIElement? BuildPreviewCaption(ApprovalPreview shape)
+    {
+        bool counts = shape.Kind != PreviewKind.Target && (shape.Added > 0 || shape.Removed > 0);
+        if (string.IsNullOrEmpty(shape.Target) && !counts) return null;
+
+        var row = new WrapPanel { Margin = new Thickness(0, 0, 0, 5) };
+
+        if (!string.IsNullOrEmpty(shape.Target))
+        {
+            var path = new TextBlock
+            {
+                Text = ShortenPath(shape.Target!),
+                FontFamily = MonoFont,
+                FontSize = 11.5,
+                Opacity = 0.85,
+                VerticalAlignment = VerticalAlignment.Center,
+                ToolTip = shape.Target, // the whole path, for when the shortened one is ambiguous
+            };
+            path.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            row.Children.Add(path);
+        }
+
+        if (counts && shape.Added > 0) row.Children.Add(CountLabel("+" + shape.Added, AddedInk));
+        if (counts && shape.Removed > 0) row.Children.Add(CountLabel("-" + shape.Removed, RemovedInk));
+        return row;
+    }
+
+    private static TextBlock CountLabel(string text, Brush ink) => new TextBlock
+    {
+        Text = text,
+        Foreground = ink,
+        FontFamily = MonoFont,
+        FontSize = 11.5,
+        FontWeight = FontWeights.SemiBold,
+        Margin = new Thickness(8, 0, 0, 0),
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
+    // A long absolute path pushes the part that identifies the file off the card, so keep the tail.
+    private static string ShortenPath(string path)
+    {
+        const int Room = 52;
+        if (path.Length <= Room) return path;
+
+        char sep = path.IndexOf('\\') >= 0 ? '\\' : '/';
+        string[] parts = path.Split(sep);
+        string tail = parts[parts.Length - 1];
+        for (int i = parts.Length - 2; i > 0; i--)
+        {
+            string wider = parts[i] + sep + tail;
+            if (wider.Length + 4 > Room) break;
+            tail = wider;
+        }
+
+        return "..." + sep + tail;
+    }
+
+    // The diff: one row per line, washed green or red, with the gutter character a developer already
+    // reads as added and removed. Read-only rather than a label, so it selects and copies like the
+    // rest of the panel, and wide enough that long lines scroll instead of wrapping into each other.
+    private UIElement BuildDiffView(ApprovalPreview shape)
+    {
+        var doc = new FlowDocument
+        {
+            PageWidth = 2400,
+            PagePadding = new Thickness(0),
+            FontFamily = MonoFont,
+            FontSize = 12,
+            LineHeight = 16,
+        };
+
+        foreach (DiffLine line in shape.Lines) doc.Blocks.Add(BuildDiffLine(line));
+
+        var view = new RichTextBox
+        {
+            Document = doc,
+            IsReadOnly = true,
+            Padding = new Thickness(0, 3, 0, 3),
+            BorderThickness = new Thickness(1),
+            MaxHeight = 260,
+            Background = Brushes.Transparent,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        };
+        view.SetResourceReference(Control.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        view.SetResourceReference(Control.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+        return view;
+    }
+
+    private Paragraph BuildDiffLine(DiffLine line)
+    {
+        var para = new Paragraph { Margin = new Thickness(0), Padding = new Thickness(6, 0, 6, 0) };
+
+        if (line.Kind == DiffKind.Gap)
+        {
+            // A folded run of unchanged lines - or, when the count is zero, the blank that separates
+            // two hunks of the same call.
+            string text = line.Text == "0" ? " " : "  " + string.Format(Loc("diffHidden"), line.Text);
+            para.Inlines.Add(new Run(text) { FontSize = 11, Foreground = Dim });
+            return para;
+        }
+
+        Brush ink = line.Kind == DiffKind.Added ? AddedInk : RemovedInk;
+        string gutter = line.Kind == DiffKind.Added ? "+ " : line.Kind == DiffKind.Removed ? "- " : "  ";
+
+        // Only the gutter is coloured. Tinting the line as well would leave the code itself harder to
+        // read than it is in the editor, which defeats the point of showing it before approving.
+        para.Inlines.Add(new Run(gutter) { Foreground = line.Kind == DiffKind.Context ? Dim : ink, FontWeight = FontWeights.Bold });
+        para.Inlines.Add(new Run(ExtensionOptions.ForDisplay(line.Text)));
+
+        if (line.Kind == DiffKind.Added) para.Background = AddedFill;
+        else if (line.Kind == DiffKind.Removed) para.Background = RemovedFill;
+        return para;
+    }
+
+    // A command on a prompt line. It wraps rather than scrolls: approving a command you can only see
+    // half of is exactly the decision this card exists to prevent.
+    private UIElement BuildCommandView(ApprovalPreview shape)
+    {
+        var stack = new StackPanel();
+
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var marker = new TextBlock
+        {
+            Text = "$",
+            Foreground = Accent,
+            FontFamily = MonoFont,
+            FontSize = 12,
+            FontWeight = FontWeights.Bold,
+            Margin = new Thickness(0, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        row.Children.Add(marker);
+
+        TextBox command = MonoBlock(shape.Text, 160, wrap: true);
+        Grid.SetColumn(command, 1);
+        row.Children.Add(command);
+        stack.Children.Add(row);
+
+        if (shape.Note != null)
+        {
+            var note = new TextBlock
+            {
+                Text = shape.Note,
+                FontSize = 11,
+                Opacity = 0.65,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(16, 4, 0, 0),
+            };
+            note.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            stack.Children.Add(note);
+        }
+
+        return stack;
+    }
+
+    // A read-only block of monospaced text. Read-only rather than a label because everything the
+    // panel shows has to be selectable, and secrets are masked on the way in.
+    private TextBox MonoBlock(string text, double maxHeight, bool wrap)
+    {
+        var box = new TextBox
+        {
+            Text = ExtensionOptions.ForDisplay(text),
+            IsReadOnly = true,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+            FontFamily = MonoFont,
+            FontSize = 12,
+            Background = Brushes.Transparent,
+            TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap,
+            HorizontalScrollBarVisibility = wrap ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = maxHeight,
+        };
+        box.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        return box;
     }
 
     // The risk badge on an approval card: filled for medium/high, quiet outline for low. The reason

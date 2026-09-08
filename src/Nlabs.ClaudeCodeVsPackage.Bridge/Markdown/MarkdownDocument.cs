@@ -164,7 +164,7 @@ public static class MarkdownDocument
             {
                 FlushParagraph();
                 blocks.Add(new MarkdownBlock(MarkdownBlockKind.Bullet, trimmed.Substring(2).Trim(),
-                    marker: "•", indent: IndentLevel(line)));
+                    marker: "\u2022", indent: IndentLevel(line)));
                 i++;
                 continue;
             }
