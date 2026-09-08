@@ -42,6 +42,29 @@ internal sealed class AgentPanelControl : UserControl
     // A faint accent-tinted fill for the user's own turn - the same hue as the accent, barely there.
     private readonly SolidColorBrush UserFill = new SolidColorBrush(Color.FromArgb(0x1F, 0xD9, 0x77, 0x57));
     private static readonly Brush OnAccent = Frozen(Color.FromRgb(0xFF, 0xFF, 0xFF));
+
+    // Windows' own UI icon font - the vocabulary Visual Studio's toolbars are drawn from. Emoji were
+    // the obvious shortcut and the wrong one: they render as multicoloured stickers that ignore the
+    // theme and the accent, and sit beside Solution Explorer looking like someone else's product.
+    private static readonly FontFamily IconFont =
+        new FontFamily("Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol");
+
+    // The glyphs used, by role. Written as escapes so this file stays plain ASCII: they live in the
+    private const string IconAttach = "\uE723";     // paperclip
+    private const string IconSelection = "\uE943";  // braces
+    private const string IconSubagent = "\uEA86";   // puzzle piece
+    private const string IconMic = "\uE720";        // microphone
+    private const string IconNew = "\uE710";        // plus
+    private const string IconRename = "\uE70F";     // pencil
+    private const string IconDelete = "\uE74D";     // waste basket
+    private const string IconFolder = "\uED25";     // open folder
+    private const string IconUndo = "\uE7A7";       // undo arrow
+    private const string IconReview = "\uE721";     // magnifier
+    private const string IconModel = "\uE734";      // star
+    private const string IconPermission = "\uE72E"; // padlock
+    private const string IconEffort = "\uE945";     // lightning bolt
+    private const string IconLanguage = "\uE774";   // globe
+    private const string IconAccent = "\uE790";     // palette
     // A neutral grey wash rather than a theme colour: eight percent of mid-grey darkens a light
     // background and lightens a dark one by the same amount, so one brush suits both themes.
     private static readonly Brush CardFill = Frozen(Color.FromArgb(0x14, 0x80, 0x80, 0x80));
@@ -166,6 +189,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["pickAgent"] = "Use a subagent", ["noAgents"] = "No subagents found",
                 ["review"] = "Review", ["bridgeOn"] = "Approvals on", ["bridgeOff"] = "Approvals off",
                 ["riskLow"] = "Low risk", ["riskMedium"] = "Changes files", ["riskHigh"] = "High risk",
+                ["bridgeOnWhat"] = "Claude asks here before it edits a file or runs a command, and you answer in the panel.",
+                ["bridgeOffWhat"] = "Nothing is asking for approval, so the CLI follows its own permission settings.",
                 ["newModel"] = "The CLI offers a newer model: {0}",
                 ["micHint"] = "Dictate a message", ["recording"] = "Recording - click the mic again to stop.",
                 ["transcribing"] = "Transcribing...", ["micFailed"] = "No microphone was available.",
@@ -237,6 +262,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["pickAgent"] = "Alt ajan kullan", ["noAgents"] = "Alt ajan bulunamadi",
                 ["review"] = "Denetle", ["bridgeOn"] = "Onaylar acik", ["bridgeOff"] = "Onaylar kapali",
                 ["riskLow"] = "Dusuk risk", ["riskMedium"] = "Dosya degistirir", ["riskHigh"] = "Yuksek risk",
+                ["bridgeOnWhat"] = "Claude bir dosyayi degistirmeden ya da komut calistirmadan once burada sorar; yaniti panelde verirsin.",
+                ["bridgeOffWhat"] = "Onay isteyen bir sey yok; CLI kendi izin ayarlarina gore davranir.",
                 ["newModel"] = "CLI'de daha yeni model var: {0}",
                 ["micHint"] = "Sesle yaz", ["recording"] = "Kayitta - durdurmak icin mikrofona tekrar bas.",
                 ["transcribing"] = "Yaziya cevriliyor...", ["micFailed"] = "Mikrofon bulunamadi.",
@@ -375,17 +402,17 @@ internal sealed class AgentPanelControl : UserControl
 
         // Tier aliases, not pinned versions - each resolves to the latest model of that tier, so the
         // list doesn't go stale as new releases land.
-        _modelCombo = MakeCombo("✦", new (string, string?)[]
+        _modelCombo = MakeCombo(IconModel, new (string, string?)[]
         {
             ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku"), ("Fable", "fable"),
         });
         // The CLI's four permission modes, in order of how much they hand over. "Bypass" is last and
         // named plainly: it stops the panel asking at all, which is a decision, not a convenience.
-        _modeCombo = MakeCombo("⚡", new (string, string?)[]
+        _modeCombo = MakeCombo(IconPermission, new (string, string?)[]
         {
             ("Ask each time", null), ("Accept edits", "acceptEdits"), ("Plan mode", "plan"), ("Bypass permissions", "bypassPermissions"),
         });
-        _effortCombo = MakeCombo("◔", new (string, string?)[]
+        _effortCombo = MakeCombo(IconEffort, new (string, string?)[]
         {
             ("Effort: default", null), ("Low", "low"), ("Medium", "medium"), ("High", "high"), ("xHigh", "xhigh"), ("Max", "max"),
         });
@@ -415,14 +442,14 @@ internal sealed class AgentPanelControl : UserControl
         LoadConversations();
 #pragma warning restore VSTHRD010
 
-        _langCombo = new ComboBox { MinWidth = 90, FontSize = 12, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
-        _langCombo.Items.Add(new ComboBoxItem { Content = "English", Tag = "en" });
-        _langCombo.Items.Add(new ComboBoxItem { Content = "Turkce", Tag = "tr" });
+        _langCombo = new ComboBox { VerticalAlignment = VerticalAlignment.Center };
+        _langCombo.Items.Add(MakeComboItem(IconLanguage, "English", "en"));
+        _langCombo.Items.Add(MakeComboItem(IconLanguage, "Turkce", "tr"));
         _langCombo.SelectedIndex = 0;
         _langCombo.SelectionChanged += (_, __) => OnLanguageChanged();
 
-        _accentCombo = new ComboBox { MinWidth = 90, FontSize = 12, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
-        foreach (var a in Accents) _accentCombo.Items.Add(new ComboBoxItem { Content = a.Name, Tag = a.Name });
+        _accentCombo = new ComboBox { VerticalAlignment = VerticalAlignment.Center };
+        foreach (var a in Accents) _accentCombo.Items.Add(MakeComboItem(IconAccent, a.Name, a.Name));
         _accentCombo.SelectedIndex = 0;
         _accentCombo.SelectionChanged += (_, __) => OnAccentChanged();
 
@@ -605,9 +632,9 @@ internal sealed class AgentPanelControl : UserControl
 
         // Glyphs, not words: three labelled buttons beside a dropdown was most of the panel's chrome,
         // and what each one does is already in its tooltip.
-        chat.Children.Add(MakeIconButton("+", "new", NewConversation));
-        chat.Children.Add(MakeIconButton("✎", "rename", BeginRename));
-        chat.Children.Add(MakeIconButton("\U0001F5D1", "delete", DeleteConversation));
+        chat.Children.Add(MakeIconButton(IconNew, "new", NewConversation));
+        chat.Children.Add(MakeIconButton(IconRename, "rename", BeginRename));
+        chat.Children.Add(MakeIconButton(IconDelete, "delete", DeleteConversation));
 
         // Language and accent: preferences rather than chat controls, so a gap sets them apart.
         chat.Children.Add(new Border { Width = 12 });
@@ -678,15 +705,15 @@ internal sealed class AgentPanelControl : UserControl
 
         // Left of the toolbar: attach an image, and pull in the code selected in the active editor.
         var leftTools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        leftTools.Children.Add(MakeIconButton("+", "attachHint", PickImages));
+        leftTools.Children.Add(MakeIconButton(IconAttach, "attachHint", PickImages));
 #pragma warning disable VSTHRD010
-        leftTools.Children.Add(MakeIconButton("{}", "addSelection", AddSelection));
+        leftTools.Children.Add(MakeIconButton(IconSelection, "addSelection", AddSelection));
         Border agentButton = null!;
         // Not "@": that belongs to file mentions, which the input completes as they are typed.
-        agentButton = MakeIconButton("\U0001F9E9", "pickAgent", () => ShowSubagentMenu(agentButton));
+        agentButton = MakeIconButton(IconSubagent, "pickAgent", () => ShowSubagentMenu(agentButton));
         leftTools.Children.Add(agentButton);
 #pragma warning restore VSTHRD010
-        _micButton = MakeIconButton("\U0001F3A4", "micHint", () => _ = ToggleDictationAsync());
+        _micButton = MakeIconButton(IconMic, "micHint", () => _ = ToggleDictationAsync());
         leftTools.Children.Add(_micButton);
 
         // Right of the toolbar: the selectors kept tight against the primary button, so a narrow
@@ -739,7 +766,7 @@ internal sealed class AgentPanelControl : UserControl
 
         // The bottom status bar: quiet mini-buttons on the left (the working folder for now; more join
         // it as those features land), the status text and running cost on the right.
-        var folderButton = BuildStatusButton("📁", PickFolder, out _folderLabel);
+        var folderButton = BuildStatusButton(IconFolder, PickFolder, out _folderLabel);
         // The panel is built on the UI thread; the folder caption reads the solution service safely here.
 #pragma warning disable VSTHRD010
         Bind(() => _folderLabel!.Text = FolderCaption());
@@ -748,7 +775,7 @@ internal sealed class AgentPanelControl : UserControl
         // The undo control sits next to the folder; it stays hidden until a turn has a snapshot to revert.
         // UndoTurnAsync re-establishes the UI thread itself before any shell access.
 #pragma warning disable VSTHRD010
-        var undoButton = BuildStatusButton("↶", () => _ = UndoTurnAsync(), out _undoLabel);
+        var undoButton = BuildStatusButton(IconUndo, () => _ = UndoTurnAsync(), out _undoLabel);
 #pragma warning restore VSTHRD010
         undoButton.Visibility = Visibility.Collapsed;
         _undoButton = undoButton;
@@ -756,7 +783,7 @@ internal sealed class AgentPanelControl : UserControl
 
         // A one-click review of the working tree - sends a read-only "find issues" turn.
 #pragma warning disable VSTHRD010
-        Border reviewButton = BuildStatusButton("🔍", () => _ = SendReviewAsync(), out TextBlock reviewLabel);
+        Border reviewButton = BuildStatusButton(IconReview, () => _ = SendReviewAsync(), out TextBlock reviewLabel);
 #pragma warning restore VSTHRD010
         Bind(() => reviewLabel.Text = Loc("review"));
 
@@ -775,9 +802,25 @@ internal sealed class AgentPanelControl : UserControl
         _bridgeLabel = new TextBlock { FontSize = 11, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center };
         _bridgeLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         Bind(() => _bridgeLabel.Text = Loc(_approval != null ? "bridgeOn" : "bridgeOff"));
-        var bridgePanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        bridgePanel.Children.Add(_bridgeDot);
-        bridgePanel.Children.Add(_bridgeLabel);
+        var bridgeRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        bridgeRow.Children.Add(_bridgeDot);
+        bridgeRow.Children.Add(_bridgeLabel);
+
+        // Clickable, like the usage figure: the state is one word in the bar, and the explanation of
+        // what that state actually permits is a click away. What is never shown, here or anywhere, is
+        // the endpoint behind it - a port on this machine is nobody else's business.
+        var bridgePanel = new Border
+        {
+            Child = bridgeRow,
+            Background = Brushes.Transparent,
+            Cursor = Cursors.Hand,
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(6, 1, 4, 1),
+            Margin = new Thickness(6, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        HoverTint(bridgePanel);
+        bridgePanel.MouseLeftButtonUp += (_, __) => ShowBridgeCard(bridgePanel);
 
         // Subscription usage (5h / 7d windows). Sits left of the bridge indicator; hidden until the
         // first rate_limit_event arrives.
@@ -1082,7 +1125,7 @@ internal sealed class AgentPanelControl : UserControl
                         _sessionCost += e.TotalCostUsd.Value;
                         _status.Text = e.IsError
                             ? Loc("turnFailed")
-                            : string.Format("${0:0.0000} · {1} ${2:0.0000}", e.TotalCostUsd.Value, Loc("session"), _sessionCost);
+                            : string.Format("${0:0.0000} \u00B7 {1} ${2:0.0000}", e.TotalCostUsd.Value, Loc("session"), _sessionCost);
                     }
                     SaveConversations();
                     DrainQueue();
@@ -1192,7 +1235,7 @@ internal sealed class AgentPanelControl : UserControl
     private void AddToolChip(ToolCall call, string? owner)
     {
         var line = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 11 };
-        line.Inlines.Add(new Run(owner == null ? "●  " : "└  ") { Foreground = Accent });
+        line.Inlines.Add(new Run(owner == null ? "\u25CF  " : "\u2514  ") { Foreground = Accent });
         if (owner != null)
         {
             line.Inlines.Add(new Run(owner + ": ") { Foreground = Accent, FontWeight = FontWeights.SemiBold });
@@ -1522,7 +1565,7 @@ internal sealed class AgentPanelControl : UserControl
         bool numbered = block.Marker.Length > 0 && block.Marker[0] >= '0' && block.Marker[0] <= '9';
         var marker = new TextBlock
         {
-            Text = (block.Marker.Length == 0 ? "•" : block.Marker) + "  ",
+            Text = (block.Marker.Length == 0 ? "\u2022" : block.Marker) + "  ",
             Foreground = Accent,
             FontWeight = FontWeights.SemiBold,
             MinWidth = numbered ? 26 : 0,
@@ -1644,10 +1687,10 @@ internal sealed class AgentPanelControl : UserControl
             ? string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}k", _turnTokens / 1000.0)
             : _turnTokens.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-        string line = string.Format("{0}  {1}s  ·  {2} {3}", WorkingVerb(secs), secs, tokens, Loc("tokens"));
+        string line = string.Format("{0}  {1}s  \u00B7  {2} {3}", WorkingVerb(secs), secs, tokens, Loc("tokens"));
 
         int quiet = (int)(DateTime.UtcNow - _lastEventAt).TotalSeconds;
-        if (_lastEventAt != default(DateTime) && quiet >= 25) line += "  ·  " + Loc("stalled");
+        if (_lastEventAt != default(DateTime) && quiet >= 25) line += "  \u00B7  " + Loc("stalled");
 
         _workingLabel.Text = line;
     }
@@ -1703,7 +1746,7 @@ internal sealed class AgentPanelControl : UserControl
 
             var dot = new TextBlock
             {
-                Text = done ? "✓  " : active ? "›  " : "○  ",
+                Text = done ? "\u2713  " : active ? "\u203A  " : "\u25CB  ",
                 FontWeight = active ? FontWeights.Bold : FontWeights.Normal,
             };
             if (done || active) dot.Foreground = Accent;
@@ -1931,10 +1974,12 @@ internal sealed class AgentPanelControl : UserControl
         Bind(() => body.Text = Loc("emptyBody"));
         stack.Children.Add(body);
 
-        stack.Children.Add(BuildHint("/", "hintSlash"));
-        stack.Children.Add(BuildHint("@", "hintAt"));
-        stack.Children.Add(BuildHint("+", "hintImage"));
-        stack.Children.Add(BuildHint("\U0001F3A4", "hintMic"));
+        // The first two are literally what you type, so they stay as characters; the last two name a
+        // button, so they wear that button's icon.
+        stack.Children.Add(BuildHint("/", "hintSlash", MonoFont));
+        stack.Children.Add(BuildHint("@", "hintAt", MonoFont));
+        stack.Children.Add(BuildHint(IconAttach, "hintImage", IconFont));
+        stack.Children.Add(BuildHint(IconMic, "hintMic", IconFont));
 
         // Offered here as well as in the status bar: choosing where Claude works is the one thing a
         // developer may need to do before their first message.
@@ -1948,15 +1993,14 @@ internal sealed class AgentPanelControl : UserControl
     }
 
     // One "type this, get that" line: the character in the accent colour, then what it does.
-    private UIElement BuildHint(string glyph, string key)
+    private UIElement BuildHint(string glyph, string key, FontFamily face)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
 
         var mark = new TextBlock
         {
             Text = glyph,
-            FontFamily = MonoFont,
-            FontWeight = FontWeights.Bold,
+            FontFamily = face,
             Foreground = Accent,
             MinWidth = 24,
         };
@@ -2328,6 +2372,7 @@ internal sealed class AgentPanelControl : UserControl
         var icon = new TextBlock
         {
             Text = glyph,
+            FontFamily = IconFont,
             FontSize = 11,
             Foreground = Accent,
             Margin = new Thickness(0, 0, 6, 0),
@@ -2426,8 +2471,8 @@ internal sealed class AgentPanelControl : UserControl
         var label = new TextBlock
         {
             Text = glyph,
-            FontSize = 14,
-            FontWeight = FontWeights.SemiBold,
+            FontFamily = IconFont,
+            FontSize = 13, // icon fonts are drawn at their own weight; bolding them muddies the strokes
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -2452,9 +2497,13 @@ internal sealed class AgentPanelControl : UserControl
     // is under the pointer reads as "disabled", which is the opposite of what a hover means.
     private void HoverTint(Border button)
     {
-        button.MouseEnter += (_, __) => button.Background = UserFill;
-        button.MouseLeave += (_, __) => button.Background = Brushes.Transparent;
+        // A button that is currently "on" (the microphone while recording) keeps its fill: hovering
+        // must not be able to clear a state the developer needs to see.
+        button.MouseEnter += (_, __) => { if (!IsLit(button)) button.Background = UserFill; };
+        button.MouseLeave += (_, __) => { if (!IsLit(button)) button.Background = Brushes.Transparent; };
     }
+
+    private static bool IsLit(Border button) => (button.Tag as string) == "on";
 
     // A quiet status-bar button: muted text that brightens on hover. The label is returned so the
     // caller can keep its text current (the folder name, a status, a count).
@@ -2465,9 +2514,10 @@ internal sealed class AgentPanelControl : UserControl
         var icon = new TextBlock
         {
             Text = glyph,
-            FontSize = 10,
+            FontFamily = IconFont,
+            FontSize = 11,
             Foreground = Accent,
-            Margin = new Thickness(0, 0, 4, 0),
+            Margin = new Thickness(0, 0, 5, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
         label = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.65 };
@@ -2505,8 +2555,8 @@ internal sealed class AgentPanelControl : UserControl
     {
         ThreadHelper.ThrowIfNotOnUIThread();
         string dir = WorkingDirectory();
-        if (string.IsNullOrEmpty(dir)) return "📁 " + Loc("pickFolder");
-        return "📁 " + (Path.GetFileName(dir.TrimEnd('\\', '/')) ?? dir);
+        if (string.IsNullOrEmpty(dir)) return Loc("pickFolder");
+        return (Path.GetFileName(dir.TrimEnd('\\', '/')) ?? dir);
     }
 
     // Lets the developer point the session at a folder - the main path when no solution is open. The
@@ -2639,9 +2689,46 @@ internal sealed class AgentPanelControl : UserControl
             stack.Children.Add(warn);
         }
 
+        ShowCardPopup(anchor, stack);
+    }
+
+    // What the approval state means, in a sentence. Deliberately says nothing about how the panel and
+    // the CLI reach each other: that is an implementation detail, and printing an address into a
+    // screenshot is how one leaks.
+    private void ShowBridgeCard(UIElement anchor)
+    {
+        bool on = _approval != null;
+
+        var stack = new StackPanel { MaxWidth = 300 };
+        var title = new TextBlock
+        {
+            Text = Loc(on ? "bridgeOn" : "bridgeOff"),
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 6),
+        };
+        title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        stack.Children.Add(title);
+
+        var body = new TextBlock
+        {
+            Text = Loc(on ? "bridgeOnWhat" : "bridgeOffWhat"),
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11,
+            Opacity = 0.75,
+        };
+        body.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        stack.Children.Add(body);
+
+        ShowCardPopup(anchor, stack);
+    }
+
+    // The shell every one of these little detail cards sits in.
+    private void ShowCardPopup(UIElement anchor, UIElement content)
+    {
         var card = new Border
         {
-            Child = stack,
+            Child = content,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(12, 10, 12, 10),
@@ -2649,15 +2736,14 @@ internal sealed class AgentPanelControl : UserControl
         card.SetResourceReference(Border.BackgroundProperty, VsBrushes.ToolWindowBackgroundKey);
         card.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
 
-        var popup = new Popup
+        new Popup
         {
             PlacementTarget = anchor,
             Placement = PlacementMode.Top,
             StaysOpen = false,
             AllowsTransparency = true,
             Child = card,
-        };
-        popup.IsOpen = true;
+        }.IsOpen = true;
     }
 
     // One window: its name, its percentage, a filled bar, and when it resets.
@@ -2728,7 +2814,7 @@ internal sealed class AgentPanelControl : UserControl
             parts.Add(ShortWindow(w.Name) + " " + string.Format(Loc("percent"), (int)Math.Round(w.Utilization * 100)));
             if (parts.Count >= 3) break;
         }
-        return string.Join("  ·  ", parts);
+        return string.Join("  \u00B7  ", parts);
     }
 
     // The CLI's window keys, in the reader's language. An unknown key is shown as it came: better a
@@ -3384,7 +3470,13 @@ internal sealed class AgentPanelControl : UserControl
     private void SetMicActive(bool active)
     {
         if (_micButton == null) return;
+        _micButton.Tag = active ? "on" : null; // so a hover cannot wipe the recording state
         _micButton.Background = active ? Accent : Brushes.Transparent;
+        if (_micButton.Child is TextBlock glyph)
+        {
+            if (active) glyph.Foreground = OnAccent;
+            else glyph.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        }
     }
 
     // --- Subagents -----------------------------------------------------------------------------
