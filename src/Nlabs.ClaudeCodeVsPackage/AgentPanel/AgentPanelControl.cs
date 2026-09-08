@@ -1126,22 +1126,24 @@ internal sealed class AgentPanelControl : UserControl
         }
         panel.Children.Add(topRow);
 
-        var code = new TextBox
+        // A RichTextBox (not a TextBox) so the code can be syntax coloured and still selected and
+        // copied. A wide PageWidth stops the document wrapping, which is what gives it a horizontal
+        // scrollbar instead of folding long lines.
+        var code = new RichTextBox
         {
-            Text = block.Text,
             IsReadOnly = true,
             IsReadOnlyCaretVisible = true,
             BorderThickness = new Thickness(1),
             Padding = new Thickness(10),
             FontFamily = MonoFont,
             FontSize = 12.5,
-            TextWrapping = TextWrapping.NoWrap,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Document = BuildCodeDocument(block.Text, block.Language),
         };
-        code.SetResourceReference(TextBox.BackgroundProperty, VsBrushes.ToolWindowBackgroundKey);
-        code.SetResourceReference(TextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-        code.SetResourceReference(TextBox.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+        code.SetResourceReference(RichTextBox.BackgroundProperty, VsBrushes.ToolWindowBackgroundKey);
+        code.SetResourceReference(RichTextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        code.SetResourceReference(RichTextBox.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
 
         var codeBorder = new Border
         {
@@ -1151,6 +1153,60 @@ internal sealed class AgentPanelControl : UserControl
         };
         panel.Children.Add(codeBorder);
         return panel;
+    }
+
+    // Turns a code block into a coloured flow document. The scanner is language aware; anything it
+    // does not classify stays in the theme's own foreground.
+    private static FlowDocument BuildCodeDocument(string text, string? language)
+    {
+        bool dark = IsDarkTheme();
+        var paragraph = new Paragraph { Margin = new Thickness(0), TextAlignment = TextAlignment.Left };
+        foreach (CodeSpan span in CodeHighlighter.Highlight(text, language))
+        {
+            var run = new Run(span.Text);
+            Brush? colour = SyntaxBrush(span.Kind, dark);
+            if (colour != null) run.Foreground = colour;
+            paragraph.Inlines.Add(run);
+        }
+
+        return new FlowDocument(paragraph)
+        {
+            PageWidth = 2400, // wide enough that lines do not wrap; the box scrolls instead
+            FontFamily = MonoFont,
+            FontSize = 12.5,
+        };
+    }
+
+    // The syntax palette, chosen per theme so it stays readable on both. Plain text returns null and
+    // keeps the tool window's own foreground.
+    private static Brush? SyntaxBrush(CodeSpanKind kind, bool dark)
+    {
+        switch (kind)
+        {
+            case CodeSpanKind.Keyword: return dark ? Frozen(Color.FromRgb(0x56, 0x9C, 0xD6)) : Frozen(Color.FromRgb(0x00, 0x00, 0xC0));
+            case CodeSpanKind.String: return dark ? Frozen(Color.FromRgb(0xCE, 0x91, 0x78)) : Frozen(Color.FromRgb(0xA3, 0x15, 0x15));
+            case CodeSpanKind.Comment: return dark ? Frozen(Color.FromRgb(0x6A, 0x99, 0x55)) : Frozen(Color.FromRgb(0x00, 0x80, 0x00));
+            case CodeSpanKind.Number: return dark ? Frozen(Color.FromRgb(0xB5, 0xCE, 0xA8)) : Frozen(Color.FromRgb(0x09, 0x86, 0x58));
+            default: return null;
+        }
+    }
+
+    // Reads the shell's own tool-window background and decides whether the theme is dark, so the
+    // syntax palette matches. Falls back to dark, which is the common Visual Studio default.
+    private static bool IsDarkTheme()
+    {
+        try
+        {
+            object? resource = Application.Current?.TryFindResource(VsBrushes.ToolWindowBackgroundKey);
+            if (resource is SolidColorBrush brush)
+            {
+                Color c = brush.Color;
+                double luminance = (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) / 255.0;
+                return luminance < 0.5;
+            }
+        }
+        catch { /* no resource yet - assume dark */ }
+        return true;
     }
 
     private UIElement BuildBullet(string text)
