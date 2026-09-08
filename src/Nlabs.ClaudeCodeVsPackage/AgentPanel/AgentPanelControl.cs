@@ -142,6 +142,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["pickAgent"] = "Use a subagent", ["noAgents"] = "No subagents found",
                 ["review"] = "Review", ["bridgeOn"] = "Approvals on", ["bridgeOff"] = "Approvals off",
                 ["riskLow"] = "Low risk", ["riskMedium"] = "Changes files", ["riskHigh"] = "High risk",
+                ["newModel"] = "The CLI offers a newer model: {0}",
                 ["reviewPrompt"] = "Review my current uncommitted changes for bugs, security issues, and simple cleanups. Do not modify any files - just report your findings.",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
@@ -170,6 +171,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["pickAgent"] = "Alt ajan kullan", ["noAgents"] = "Alt ajan bulunamadi",
                 ["review"] = "Denetle", ["bridgeOn"] = "Onaylar acik", ["bridgeOff"] = "Onaylar kapali",
                 ["riskLow"] = "Dusuk risk", ["riskMedium"] = "Dosya degistirir", ["riskHigh"] = "Yuksek risk",
+                ["newModel"] = "CLI'de daha yeni model var: {0}",
                 ["reviewPrompt"] = "Commit edilmemis mevcut degisikliklerimi hata, guvenlik sorunu ve basit iyilestirmeler icin incele. Hicbir dosyayi degistirme - sadece bulgulari raporla.",
             },
         };
@@ -199,6 +201,7 @@ internal sealed class AgentPanelControl : UserControl
     private readonly ConversationStore _store = new ConversationStore();
     private readonly PanelPreferencesStore _prefs = new PanelPreferencesStore();
     private bool _prefsLoaded; // suppresses saves while the constructor applies the stored choices
+    private bool _modelCheckDone; // the model-staleness check runs once per panel
     private string _workspaceKey = string.Empty;
     private string? _workingFolder;    // an explicit working folder chosen when no solution is open
     private TextBlock? _folderLabel;
@@ -805,6 +808,7 @@ internal sealed class AgentPanelControl : UserControl
         }
         _session.Start(WorkingDirectory(), options);
         _status.Text = "Connected.";
+        _ = CheckModelCatalogAsync(); // one-off, off the UI thread; never blocks the turn
     }
 
     // CLI events arrive on the pump thread; marshal every UI change to the dispatcher.
@@ -2144,15 +2148,45 @@ internal sealed class AgentPanelControl : UserControl
         await SendAsync();
     }
 
-    // Runs a git command in dir off the UI thread and returns (exit-zero, trimmed stdout). Never throws:
-    // no git, no repo or a timeout all come back as (false, ""), which simply disables the undo control.
-    private static async System.Threading.Tasks.Task<(bool ok, string output)> RunGitAsync(string dir, string args)
+    private static System.Threading.Tasks.Task<(bool ok, string output)> RunGitAsync(string dir, string args)
+        => RunProcessAsync("git", args, dir);
+
+    // Asks the CLI once per panel which model aliases it accepts, and says so if the picker has
+    // fallen behind - a hard-coded model list otherwise goes quietly stale as new tiers ship.
+    private async System.Threading.Tasks.Task CheckModelCatalogAsync()
+    {
+        if (_modelCheckDone) return;
+        _modelCheckDone = true;
+
+        var offered = new List<string>();
+        foreach (object item in _modelCombo.Items)
+        {
+            if (item is ComboBoxItem ci && ci.Tag is string alias && alias.Length > 0) offered.Add(alias);
+        }
+
+        var (fileName, arguments) = ClaudeCliSession.ComposeStart(ClaudeCliSession.ResolveExecutable(), "--help");
+        var (ok, help) = await RunProcessAsync(fileName, arguments, string.Empty);
+        if (!ok) return;
+
+        ModelCatalogDiff diff = ModelCatalogCheck.Compare(help, offered);
+        if (!diff.IsStale) return;
+
+        string names = string.Join(", ", diff.NewInCli);
+        _status.Text = string.Format(Loc("newModel"), names);
+        _modelCombo.ToolTip = string.Format(Loc("newModel"), names);
+    }
+
+    // Runs a short-lived process off the UI thread and returns (exit-zero, trimmed stdout). Never
+    // throws: a missing executable or a timeout comes back as (false, ""), so a caller can simply
+    // treat the feature that needed it as unavailable.
+    private static async System.Threading.Tasks.Task<(bool ok, string output)> RunProcessAsync(
+        string fileName, string args, string dir)
     {
         return await System.Threading.Tasks.Task.Run(() =>
         {
             try
             {
-                var psi = new System.Diagnostics.ProcessStartInfo("git", args)
+                var psi = new System.Diagnostics.ProcessStartInfo(fileName, args)
                 {
                     WorkingDirectory = dir,
                     RedirectStandardOutput = true,

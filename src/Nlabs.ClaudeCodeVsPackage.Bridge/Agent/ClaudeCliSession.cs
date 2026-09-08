@@ -166,7 +166,12 @@ public sealed class ClaudeCliSession : IDisposable
 
     // Best-effort location of the claude executable: an explicit override, then PATH, then the
     // npm global directory. Returns null to let cmd.exe resolve it from PATH.
-    private static string? ResolveExecutable()
+    /// <summary>
+    /// Locates the <c>claude</c> executable: an explicit override, then PATH, then the npm shim.
+    /// Public because more than a session needs it - the panel also runs the CLI once to read its
+    /// help and notice when the model list has moved on.
+    /// </summary>
+    public static string? ResolveExecutable()
     {
         string? overridePath = Environment.GetEnvironmentVariable("NLABS_CLAUDE_PATH");
         if (!string.IsNullOrEmpty(overridePath) && File.Exists(overridePath)) return overridePath;
