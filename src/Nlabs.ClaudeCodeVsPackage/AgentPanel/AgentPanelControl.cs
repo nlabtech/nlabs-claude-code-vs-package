@@ -90,6 +90,16 @@ internal sealed class AgentPanelControl : UserControl
         public Action? Panel;
     }
 
+    // One row of the completion popup, whichever token opened it. Panel commands run locally; every
+    // other entry replaces the token being typed with Insert.
+    private sealed class CompletionItem
+    {
+        public string Label = string.Empty;
+        public string Description = string.Empty;
+        public string Insert = string.Empty;
+        public Action? Panel;
+    }
+
     private readonly StackPanel _messages;
     private readonly ScrollViewer _scroller;
     private readonly TextBox _input;
@@ -212,6 +222,9 @@ internal sealed class AgentPanelControl : UserControl
     private bool _modelCheckDone; // the model-staleness check runs once per panel
     private readonly VoiceRecorder _recorder = new VoiceRecorder();
     private Border? _micButton;
+    private List<string>? _pathCache;   // workspace paths for "@" completion, rebuilt on a timer
+    private string _pathCacheDir = string.Empty;
+    private DateTime _pathCacheAt;
     private string _workspaceKey = string.Empty;
     private string? _workingFolder;    // an explicit working folder chosen when no solution is open
     private TextBlock? _folderLabel;
@@ -549,7 +562,8 @@ internal sealed class AgentPanelControl : UserControl
 #pragma warning disable VSTHRD010
         leftTools.Children.Add(MakeIconButton("{}", "addSelection", AddSelection));
         Border agentButton = null!;
-        agentButton = MakeIconButton("@", "pickAgent", () => ShowSubagentMenu(agentButton));
+        // Not "@": that belongs to file mentions, which the input completes as they are typed.
+        agentButton = MakeIconButton("\U0001F9E9", "pickAgent", () => ShowSubagentMenu(agentButton));
         leftTools.Children.Add(agentButton);
 #pragma warning restore VSTHRD010
         _micButton = MakeIconButton("\U0001F3A4", "micHint", () => _ = ToggleDictationAsync());
@@ -706,7 +720,7 @@ internal sealed class AgentPanelControl : UserControl
                 case Key.Escape: HideSlash(); e.Handled = true; return;
                 case Key.Enter:
                 case Key.Tab:
-                    if (_slashList?.SelectedItem is ListBoxItem it && it.Tag is SlashCommand cmd)
+                    if (_slashList?.SelectedItem is ListBoxItem it && it.Tag is CompletionItem cmd)
                     {
                         RunSlash(cmd);
                         e.Handled = true;
@@ -2038,6 +2052,7 @@ internal sealed class AgentPanelControl : UserControl
             _session?.Dispose();
             _session = null;
             _snapshotRef = null; // a snapshot from the old folder no longer applies
+            _pathCache = null;   // and so does the "@" completion index
             UpdateUndoButton();
             if (_folderLabel != null) _folderLabel.Text = FolderCaption();
             _status.Text = Loc("folderSet");
@@ -2234,7 +2249,7 @@ internal sealed class AgentPanelControl : UserControl
         _slashList.SetResourceReference(ListBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         _slashList.PreviewMouseLeftButtonUp += (_, __) =>
         {
-            if (_slashList.SelectedItem is ListBoxItem it && it.Tag is SlashCommand c) RunSlash(c);
+            if (_slashList.SelectedItem is ListBoxItem it && it.Tag is CompletionItem c) RunSlash(c);
         };
 
         var frame = new Border
@@ -2261,41 +2276,109 @@ internal sealed class AgentPanelControl : UserControl
         return _slashPopup;
     }
 
-    // Opens/updates the menu as the developer types. It shows only while the line is a bare command
-    // being typed: it starts with "/" and has no space or newline yet (once an argument is typed the
-    // command is chosen and the menu gets out of the way).
+    // The token being typed just before the caret, when it is one the panel completes: "/" for a
+    // command (only at the very start of the input) or "@" for a file mention (anywhere).
+    private (char Kind, int Start, string Fragment)? TokenBeforeCaret()
+    {
+        string text = _input.Text ?? string.Empty;
+        int caret = Math.Min(_input.CaretIndex, text.Length);
+
+        int i = caret - 1;
+        while (i >= 0 && !char.IsWhiteSpace(text[i])) i--;
+        int start = i + 1;
+        if (start >= caret) return null;
+
+        char kind = text[start];
+        if (kind != '/' && kind != '@') return null;
+        if (kind == '/' && start != 0) return null; // a command is the whole line, not a word in it
+
+        return (kind, start, text.Substring(start + 1, caret - start - 1));
+    }
+
+    // Opens/updates the completion popup as the developer types, for whichever token is under the
+    // caret. Closing it is the default: no token, or nothing matching, means get out of the way.
     private void UpdateSlashPopup()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        string text = _input.Text ?? string.Empty;
-        if (!text.StartsWith("/") || text.IndexOf(' ') >= 0 || text.IndexOf('\n') >= 0)
-        {
-            HideSlash();
-            return;
-        }
+        var token = TokenBeforeCaret();
+        if (token == null) { HideSlash(); return; }
 
-        string fragment = text.Substring(1);
-        var matches = new List<SlashCommand>();
-        foreach (SlashCommand c in SlashCommands())
-        {
-            if (c.Name.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0) matches.Add(c);
-        }
+        List<CompletionItem> matches = token.Value.Kind == '/'
+            ? MatchCommands(token.Value.Fragment)
+            : MatchFiles(token.Value.Fragment);
+
         if (matches.Count == 0) { HideSlash(); return; }
 
-        PopulateSlash(matches);
+        PopulateCompletion(matches);
         if (_slashPopup != null) _slashPopup.IsOpen = true;
     }
 
+    private List<CompletionItem> MatchCommands(string fragment)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var matches = new List<CompletionItem>();
+        foreach (SlashCommand c in SlashCommands())
+        {
+            if (c.Name.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            matches.Add(new CompletionItem
+            {
+                Label = "/" + c.Name,
+                Description = c.Description,
+                Insert = "/" + c.Name + " ",
+                Panel = c.Panel,
+            });
+        }
+        return matches;
+    }
+
+    // File and folder completions for an "@" mention, ranked so a name that starts with what was
+    // typed comes before one that merely contains it.
+    private List<CompletionItem> MatchFiles(string fragment)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var starts = new List<CompletionItem>();
+        var contains = new List<CompletionItem>();
+
+        foreach (string relative in WorkspacePaths())
+        {
+            if (starts.Count + contains.Count >= 60) break;
+            if (fragment.Length > 0 && relative.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+            string name = relative.TrimEnd('/');
+            int slash = name.LastIndexOf('/');
+            string leaf = slash >= 0 ? name.Substring(slash + 1) : name;
+
+            var item = new CompletionItem
+            {
+                Label = leaf + (relative.EndsWith("/", StringComparison.Ordinal) ? "/" : string.Empty),
+                Description = relative,
+                Insert = "@" + relative + (relative.EndsWith("/", StringComparison.Ordinal) ? string.Empty : " "),
+            };
+
+            if (fragment.Length == 0 || leaf.StartsWith(fragment, StringComparison.OrdinalIgnoreCase)) starts.Add(item);
+            else contains.Add(item);
+        }
+
+        starts.AddRange(contains);
+        return starts;
+    }
+
     // Fills the list with the current matches, the first one preselected so Enter picks it at once.
-    private void PopulateSlash(List<SlashCommand> matches)
+    private void PopulateCompletion(List<CompletionItem> matches)
     {
         if (_slashList == null) return;
         _slashList.Items.Clear();
-        foreach (SlashCommand c in matches)
+        foreach (CompletionItem c in matches)
         {
-            var name = new TextBlock { Text = "/" + c.Name, FontWeight = FontWeights.SemiBold, FontSize = 12.5 };
+            var name = new TextBlock { Text = c.Label, FontWeight = FontWeights.SemiBold, FontSize = 12.5 };
             name.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-            var desc = new TextBlock { Text = c.Description, FontSize = 11, Opacity = 0.6, TextTrimming = TextTrimming.CharacterEllipsis };
+            var desc = new TextBlock
+            {
+                Text = c.Description,
+                FontSize = 11,
+                Opacity = 0.6,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            };
             desc.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
             var row = new StackPanel { Margin = new Thickness(6, 3, 6, 3) };
@@ -2322,22 +2405,95 @@ internal sealed class AgentPanelControl : UserControl
         if (_slashPopup != null) _slashPopup.IsOpen = false;
     }
 
-    // Panel commands run locally and clear the input; forward commands drop "/name " into the input so
-    // an argument can be typed, then Enter sends the whole line for the CLI to expand.
-    private void RunSlash(SlashCommand c)
+    // Panel commands run locally and clear the input; everything else replaces just the token being
+    // typed, so an "@file" completion lands mid-sentence without disturbing the rest of the line.
+    private void RunSlash(CompletionItem c)
     {
+        var token = TokenBeforeCaret();
         HideSlash();
+
         if (c.Panel != null)
         {
             _input.Clear();
             c.Panel();
+            _input.Focus();
+            return;
         }
-        else
+
+        if (token != null)
         {
-            _input.Text = "/" + c.Name + " ";
-            _input.CaretIndex = _input.Text.Length;
+            string text = _input.Text ?? string.Empty;
+            int caret = Math.Min(_input.CaretIndex, text.Length);
+            int start = token.Value.Start;
+            _input.Text = text.Substring(0, start) + c.Insert + text.Substring(caret);
+            _input.CaretIndex = start + c.Insert.Length;
         }
         _input.Focus();
+    }
+
+    // The workspace's files and folders as forward-slashed relative paths, built once and reused -
+    // walking the tree on every keystroke would stall the input on any real repository. Build output
+    // and package folders are skipped: nobody @-mentions bin/obj.
+    private List<string> WorkspacePaths()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        string dir = WorkingDirectory();
+        if (string.IsNullOrEmpty(dir)) return new List<string>();
+
+        if (_pathCache != null && string.Equals(_pathCacheDir, dir, StringComparison.OrdinalIgnoreCase) &&
+            DateTime.UtcNow - _pathCacheAt < TimeSpan.FromSeconds(30))
+        {
+            return _pathCache;
+        }
+
+        var paths = new List<string>();
+        CollectPaths(dir, dir, paths, 0);
+        _pathCache = paths;
+        _pathCacheDir = dir;
+        _pathCacheAt = DateTime.UtcNow;
+        return paths;
+    }
+
+    private const int MaxIndexedPaths = 4000;
+
+    private static void CollectPaths(string root, string current, List<string> sink, int depth)
+    {
+        if (depth > 12 || sink.Count >= MaxIndexedPaths) return;
+        try
+        {
+            foreach (string directory in Directory.EnumerateDirectories(current))
+            {
+                if (sink.Count >= MaxIndexedPaths) return;
+                if (IsIgnoredFolder(Path.GetFileName(directory))) continue;
+                sink.Add(RelativePath(root, directory) + "/");
+                CollectPaths(root, directory, sink, depth + 1);
+            }
+            foreach (string file in Directory.EnumerateFiles(current))
+            {
+                if (sink.Count >= MaxIndexedPaths) return;
+                sink.Add(RelativePath(root, file));
+            }
+        }
+        catch { /* unreadable folder - skip it */ }
+    }
+
+    private static bool IsIgnoredFolder(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return true;
+        switch (name!.ToLowerInvariant())
+        {
+            case "bin": case "obj": case ".git": case ".vs": case "node_modules":
+            case "packages": case "dist": case ".angular": case ".next": case "__pycache__":
+                return true;
+            default:
+                return name[0] == '.' && name.Length > 1; // other dot-folders are noise too
+        }
+    }
+
+    private static string RelativePath(string root, string full)
+    {
+        string relative = full.Length > root.Length ? full.Substring(root.Length) : full;
+        return relative.TrimStart('\\', '/').Replace('\\', '/');
     }
 
     // The menu contents: the panel's own actions first, then any custom commands discovered in the
