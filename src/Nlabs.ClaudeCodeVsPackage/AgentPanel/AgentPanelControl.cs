@@ -142,6 +142,17 @@ internal sealed class AgentPanelControl : UserControl
                 ["tokens"] = "tokens", ["defaultEffort"] = "Effort: default",
                 ["pickFolder"] = "Pick folder", ["folderSet"] = "Folder set - your next message starts here.",
                 ["cmdNew"] = "Start a new chat", ["cmdClear"] = "Clear this chat and its context",
+                ["cmdModel"] = "Choose the model", ["cmdEffort"] = "Choose the thinking effort",
+                ["cmdPermission"] = "Choose how tools are approved", ["cmdLanguage"] = "Change the panel language",
+                ["cmdAgents"] = "Delegate part of the turn to a subagent", ["cmdAttach"] = "Attach an image",
+                ["cmdFolder"] = "Change the working folder", ["cmdReview"] = "Review the uncommitted changes",
+                ["cmdUndo"] = "Undo the last turn's file changes",
+                ["cmdInit"] = "Write a CLAUDE.md for this project", ["cmdCompact"] = "Summarise the context so far",
+                ["cmdContext"] = "Show what is filling the context", ["cmdCost"] = "Show this session's cost",
+                ["cmdMemory"] = "Edit the memory files", ["cmdMcp"] = "Show the MCP servers",
+                ["cmdTodos"] = "Show the current task list", ["cmdStatus"] = "Show the CLI's status",
+                ["cmdDoctor"] = "Check the installation", ["cmdHelp"] = "List the CLI's own commands",
+                ["cmdProject"] = "Project command", ["cmdUser"] = "Your command",
                 ["commands"] = "Commands", ["projectCommands"] = "Project commands",
                 ["addSelection"] = "Add the editor selection", ["noSelection"] = "Select some code in the editor first.",
                 ["undoTurn"] = "Undo turn",
@@ -157,6 +168,10 @@ internal sealed class AgentPanelControl : UserControl
                 ["transcribing"] = "Transcribing...", ["micFailed"] = "No microphone was available.",
                 ["sttNotSet"] = "Set a speech-to-text command in Tools > Options > Claude Code (nLabtech).",
                 ["sttFailed"] = "The speech-to-text command failed.", ["sttEmpty"] = "Nothing was recognised.",
+                ["micChecking"] = "Looking for a speech engine...",
+                ["micSaveFailed"] = "The recording could not be saved.",
+                ["sttTimeout"] = "Transcription took too long and was stopped.",
+                ["sttNoEngine"] = "No speech engine found. Install one (pip install faster-whisper) or set a command in Tools > Options > Claude Code (nLabtech).",
                 ["reviewPrompt"] = "Review my current uncommitted changes for bugs, security issues, and simple cleanups. Do not modify any files - just report your findings.",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
@@ -175,6 +190,17 @@ internal sealed class AgentPanelControl : UserControl
                 ["tokens"] = "token", ["defaultEffort"] = "Efor: varsayilan",
                 ["pickFolder"] = "Klasor sec", ["folderSet"] = "Klasor secildi - sonraki mesajin burada baslar.",
                 ["cmdNew"] = "Yeni bir sohbet baslat", ["cmdClear"] = "Bu sohbeti ve baglamini temizle",
+                ["cmdModel"] = "Model sec", ["cmdEffort"] = "Dusunme eforunu sec",
+                ["cmdPermission"] = "Araclarin nasil onaylanacagini sec", ["cmdLanguage"] = "Panel dilini degistir",
+                ["cmdAgents"] = "Turun bir parcasini alt ajana devret", ["cmdAttach"] = "Gorsel ekle",
+                ["cmdFolder"] = "Calisma klasorunu degistir", ["cmdReview"] = "Commit edilmemis degisiklikleri incele",
+                ["cmdUndo"] = "Son turun dosya degisikliklerini geri al",
+                ["cmdInit"] = "Bu proje icin CLAUDE.md yaz", ["cmdCompact"] = "Buraya kadarki baglami ozetle",
+                ["cmdContext"] = "Baglami ne dolduruyor goster", ["cmdCost"] = "Bu oturumun maliyetini goster",
+                ["cmdMemory"] = "Hafiza dosyalarini duzenle", ["cmdMcp"] = "MCP sunucularini goster",
+                ["cmdTodos"] = "Gecerli gorev listesini goster", ["cmdStatus"] = "CLI durumunu goster",
+                ["cmdDoctor"] = "Kurulumu denetle", ["cmdHelp"] = "CLI'nin kendi komutlarini listele",
+                ["cmdProject"] = "Proje komutu", ["cmdUser"] = "Senin komutun",
                 ["commands"] = "Komutlar", ["projectCommands"] = "Proje komutlari",
                 ["addSelection"] = "Editordeki secimi ekle", ["noSelection"] = "Once editorde bir kod sec.",
                 ["undoTurn"] = "Turu geri al",
@@ -190,6 +216,10 @@ internal sealed class AgentPanelControl : UserControl
                 ["transcribing"] = "Yaziya cevriliyor...", ["micFailed"] = "Mikrofon bulunamadi.",
                 ["sttNotSet"] = "Tools > Options > Claude Code (nLabtech) altinda konusma-yazi komutunu ayarla.",
                 ["sttFailed"] = "Konusma-yazi komutu basarisiz oldu.", ["sttEmpty"] = "Hicbir sey anlasilmadi.",
+                ["micChecking"] = "Konusma motoru araniyor...",
+                ["micSaveFailed"] = "Kayit kaydedilemedi.",
+                ["sttTimeout"] = "Yaziya cevirme cok uzun surdu, durduruldu.",
+                ["sttNoEngine"] = "Konusma motoru bulunamadi. Birini kur (pip install faster-whisper) ya da Tools > Options > Claude Code (nLabtech) altinda komut ayarla.",
                 ["reviewPrompt"] = "Commit edilmemis mevcut degisikliklerimi hata, guvenlik sorunu ve basit iyilestirmeler icin incele. Hicbir dosyayi degistirme - sadece bulgulari raporla.",
             },
         };
@@ -221,6 +251,8 @@ internal sealed class AgentPanelControl : UserControl
     private bool _prefsLoaded; // suppresses saves while the constructor applies the stored choices
     private bool _modelCheckDone; // the model-staleness check runs once per panel
     private readonly VoiceRecorder _recorder = new VoiceRecorder();
+    private string? _speechCommand;  // the transcriber found on this machine, if any
+    private bool _speechProbed;      // looked for one already - the answer will not change
     private Border? _micButton;
     private List<string>? _pathCache;   // workspace paths for "@" completion, rebuilt on a timer
     private string _pathCacheDir = string.Empty;
@@ -946,8 +978,24 @@ internal sealed class AgentPanelControl : UserControl
 
         if (text.Length > 0)
         {
-            var body = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap };
-            body.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            // Read-only TextBox, not TextBlock: the developer's own prompt is the text most often
+            // lifted back out, and a TextBlock cannot be selected here.
+            var body = new TextBox
+            {
+                Text = text,
+                IsReadOnly = true,
+                IsReadOnlyCaretVisible = false,
+                IsTabStop = false,
+                TextWrapping = TextWrapping.Wrap,
+                BorderThickness = new Thickness(0),
+                Background = Brushes.Transparent,
+                Padding = new Thickness(0),
+                FocusVisualStyle = null,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            };
+            body.SetResourceReference(Control.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            BubbleWheelToParent(body);
             stack.Children.Add(body);
         }
 
@@ -1087,11 +1135,14 @@ internal sealed class AgentPanelControl : UserControl
         var link = new TextBlock
         {
             FontSize = 10.5,
-            Opacity = 0.5,
+            Opacity = 0.7,
             Cursor = Cursors.Hand,
             Margin = new Thickness(0, 0, 10, 0),
+            Background = Brushes.Transparent, // without a brush only the glyphs are hit-testable
         };
         link.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        link.MouseEnter += (_, __) => link.Opacity = 1;
+        link.MouseLeave += (_, __) => link.Opacity = 0.7;
         Bind(() => link.Text = Loc(key));
         if (onClick != null) link.MouseLeftButtonUp += (_, __) => onClick();
         return link;
@@ -1178,6 +1229,7 @@ internal sealed class AgentPanelControl : UserControl
         code.SetResourceReference(RichTextBox.BackgroundProperty, VsBrushes.ToolWindowBackgroundKey);
         code.SetResourceReference(RichTextBox.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         code.SetResourceReference(RichTextBox.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+        BubbleWheelToParent(code);
 
         var codeBorder = new Border
         {
@@ -1243,44 +1295,93 @@ internal sealed class AgentPanelControl : UserControl
         return true;
     }
 
+    // A bullet is a two-column row rather than a horizontal stack: the text column has to be given a
+    // finite width, or the selectable body below would lay out unwrapped.
     private UIElement BuildBullet(string text)
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        var row = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
         var dot = new TextBlock { Text = "•  ", Foreground = Accent, FontWeight = FontWeights.Bold };
         row.Children.Add(dot);
-        row.Children.Add(BuildInlineText(text, bold: false, fontSize: 0, topGap: 0));
+
+        var body = (FrameworkElement)BuildInlineText(text, bold: false, fontSize: 0, topGap: 0);
+        Grid.SetColumn(body, 1);
+        row.Children.Add(body);
         return row;
     }
 
     // A paragraph/heading/bullet line whose **bold** and `code` spans are real runs.
-    private TextBlock BuildInlineText(string text, bool bold, double fontSize, double topGap)
+    //
+    // It is a read-only RichTextBox rather than a TextBlock for one reason: on .NET Framework's WPF a
+    // TextBlock cannot be selected, so a reply could be read but never dragged out with the mouse -
+    // which is what makes a chat panel feel broken. A RichTextBox keeps the inline formatting, adds
+    // selection and the native Ctrl+C, and with both scrollbars disabled it still measures to its own
+    // content, so it lays out exactly like the TextBlock it replaces.
+    private UIElement BuildInlineText(string text, bool bold, double fontSize, double topGap)
     {
-        var tb = new TextBlock
+        var paragraph = new Paragraph
         {
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, topGap, 0, 0),
+            Margin = new Thickness(0),
             LineHeight = 18,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
         };
-        if (fontSize > 0) tb.FontSize = fontSize;
-        if (bold) tb.FontWeight = FontWeights.Bold;
-        tb.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
         foreach (MarkdownInline run in MarkdownDocument.ParseInline(text))
         {
             switch (run.Kind)
             {
                 case MarkdownInlineKind.Bold:
-                    tb.Inlines.Add(new Run(run.Text) { FontWeight = FontWeights.Bold });
+                    paragraph.Inlines.Add(new Run(run.Text) { FontWeight = FontWeights.Bold });
                     break;
                 case MarkdownInlineKind.Code:
-                    tb.Inlines.Add(new Run(run.Text) { FontFamily = MonoFont });
+                    paragraph.Inlines.Add(new Run(run.Text) { FontFamily = MonoFont });
                     break;
                 default:
-                    tb.Inlines.Add(new Run(run.Text));
+                    paragraph.Inlines.Add(new Run(run.Text));
                     break;
             }
         }
-        return tb;
+
+        var box = new RichTextBox
+        {
+            Document = new FlowDocument(paragraph) { PagePadding = new Thickness(0) },
+            IsReadOnly = true,
+            IsReadOnlyCaretVisible = false,
+            IsTabStop = false,
+            BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent,
+            Padding = new Thickness(0),
+            Margin = new Thickness(0, topGap, 0, 0),
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            FocusVisualStyle = null,
+        };
+        if (fontSize > 0) box.FontSize = fontSize;
+        if (bold) box.FontWeight = FontWeights.Bold;
+        box.SetResourceReference(Control.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        BubbleWheelToParent(box);
+        return box;
+    }
+
+    // Every RichTextBox carries its own ScrollViewer, which would swallow the wheel and freeze the
+    // feed whenever the pointer sat over a reply. Hand the wheel back to the container instead.
+    private static void BubbleWheelToParent(FrameworkElement box)
+    {
+        box.PreviewMouseWheel += (_, e) =>
+        {
+            if (e.Handled) return;
+            e.Handled = true;
+            if (box.Parent is UIElement parent)
+            {
+                parent.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+                {
+                    RoutedEvent = UIElement.MouseWheelEvent,
+                    Source = box,
+                });
+            }
+        };
     }
 
     // Shows turn progress. The input stays live during a turn (messages typed then are queued); the
@@ -2209,6 +2310,16 @@ internal sealed class AgentPanelControl : UserControl
     private static async System.Threading.Tasks.Task<(bool ok, string output)> RunProcessAsync(
         string fileName, string args, string dir)
     {
+        var (ok, output, _) = await RunProcessDetailedAsync(fileName, args, dir, 15000);
+        return (ok, output);
+    }
+
+    // The same runner, but reporting a timeout separately and letting the caller set the limit. A
+    // transcription is minutes-long work the first time a speech model loads, and "it timed out" is
+    // a different thing to tell the developer than "it failed".
+    private static async System.Threading.Tasks.Task<(bool ok, string output, bool timedOut)> RunProcessDetailedAsync(
+        string fileName, string args, string dir, int timeoutMs)
+    {
         return await System.Threading.Tasks.Task.Run(() =>
         {
             try
@@ -2220,17 +2331,21 @@ internal sealed class AgentPanelControl : UserControl
                     RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true,
+                    // Read as UTF-8 rather than the console's code page, so a transcript in a
+                    // language with accents arrives intact instead of as mojibake.
+                    StandardOutputEncoding = new System.Text.UTF8Encoding(false),
+                    StandardErrorEncoding = new System.Text.UTF8Encoding(false),
                 };
                 using (System.Diagnostics.Process? p = System.Diagnostics.Process.Start(psi))
                 {
-                    if (p == null) return (false, string.Empty);
+                    if (p == null) return (false, string.Empty, false);
                     string output = p.StandardOutput.ReadToEnd();
                     p.StandardError.ReadToEnd(); // drain so the pipe never blocks the process
-                    if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return (false, string.Empty); }
-                    return (p.ExitCode == 0, output.Trim());
+                    if (!p.WaitForExit(timeoutMs)) { try { p.Kill(); } catch { } return (false, string.Empty, true); }
+                    return (p.ExitCode == 0, output.Trim(), false);
                 }
             }
-            catch { return (false, string.Empty); }
+            catch { return (false, string.Empty, false); }
         });
     }
 
@@ -2313,22 +2428,31 @@ internal sealed class AgentPanelControl : UserControl
         if (_slashPopup != null) _slashPopup.IsOpen = true;
     }
 
+    // Commands matching what has been typed, with the ones that start with it first - typing "co"
+    // should offer /compact and /context before /model's description happens to contain it.
     private List<CompletionItem> MatchCommands(string fragment)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        var matches = new List<CompletionItem>();
+        var starts = new List<CompletionItem>();
+        var contains = new List<CompletionItem>();
+
         foreach (SlashCommand c in SlashCommands())
         {
             if (c.Name.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) < 0) continue;
-            matches.Add(new CompletionItem
+            var item = new CompletionItem
             {
                 Label = "/" + c.Name,
                 Description = c.Description,
                 Insert = "/" + c.Name + " ",
                 Panel = c.Panel,
-            });
+            };
+
+            if (fragment.Length == 0 || c.Name.StartsWith(fragment, StringComparison.OrdinalIgnoreCase)) starts.Add(item);
+            else contains.Add(item);
         }
-        return matches;
+
+        starts.AddRange(contains);
+        return starts;
     }
 
     // File and folder completions for an "@" mention, ranked so a name that starts with what was
@@ -2496,8 +2620,10 @@ internal sealed class AgentPanelControl : UserControl
         return relative.TrimStart('\\', '/').Replace('\\', '/');
     }
 
-    // The menu contents: the panel's own actions first, then any custom commands discovered in the
-    // project's .claude/commands folder (which the CLI expands when the line is sent).
+    // The menu contents, in the order they are useful: the panel's own actions (which run here,
+    // because the panel owns the state they change), then the CLI's own commands (which are handed
+    // to it with the message), then whatever the developer has written for this project or for
+    // themselves. A command with no Panel action is simply typed into the input for the CLI.
     private List<SlashCommand> SlashCommands()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -2505,30 +2631,75 @@ internal sealed class AgentPanelControl : UserControl
         {
             new SlashCommand { Name = "new", Description = Loc("cmdNew"), Panel = NewConversation },
             new SlashCommand { Name = "clear", Description = Loc("cmdClear"), Panel = ClearCurrentChat },
+            new SlashCommand { Name = "model", Description = Loc("cmdModel"), Panel = () => OpenCombo(_modelCombo) },
+            new SlashCommand { Name = "effort", Description = Loc("cmdEffort"), Panel = () => OpenCombo(_effortCombo) },
+            new SlashCommand { Name = "permission", Description = Loc("cmdPermission"), Panel = () => OpenCombo(_modeCombo) },
+            new SlashCommand { Name = "language", Description = Loc("cmdLanguage"), Panel = () => OpenCombo(_langCombo) },
+            new SlashCommand { Name = "agents", Description = Loc("cmdAgents"), Panel = () => ShowSubagentMenu(_input) },
+            new SlashCommand { Name = "attach", Description = Loc("cmdAttach"), Panel = PickImages },
+            new SlashCommand { Name = "folder", Description = Loc("cmdFolder"), Panel = PickFolder },
+            new SlashCommand { Name = "review", Description = Loc("cmdReview"), Panel = () => _ = SendReviewAsync() },
+            new SlashCommand { Name = "undo", Description = Loc("cmdUndo"), Panel = () => _ = UndoTurnAsync() },
+
+            // Handed to the CLI. These are its commands, not the panel's, so the panel does not
+            // pretend to implement them - it types the line and the CLI expands it.
+            new SlashCommand { Name = "init", Description = Loc("cmdInit") },
+            new SlashCommand { Name = "compact", Description = Loc("cmdCompact") },
+            new SlashCommand { Name = "context", Description = Loc("cmdContext") },
+            new SlashCommand { Name = "cost", Description = Loc("cmdCost") },
+            new SlashCommand { Name = "memory", Description = Loc("cmdMemory") },
+            new SlashCommand { Name = "mcp", Description = Loc("cmdMcp") },
+            new SlashCommand { Name = "todos", Description = Loc("cmdTodos") },
+            new SlashCommand { Name = "status", Description = Loc("cmdStatus") },
+            new SlashCommand { Name = "doctor", Description = Loc("cmdDoctor") },
+            new SlashCommand { Name = "help", Description = Loc("cmdHelp") },
         };
-        list.AddRange(DiscoverProjectCommands());
+
+        string dir = WorkingDirectory();
+        if (!string.IsNullOrEmpty(dir))
+            list.AddRange(DiscoverCommands(Path.Combine(dir, ".claude", "commands"), Loc("cmdProject")));
+        list.AddRange(DiscoverCommands(UserClaudeDir("commands"), Loc("cmdUser")));
         return list;
     }
 
-    // Reads the project's custom slash commands from .claude/commands (nested folders become "dir:name",
-    // matching the CLI's own naming). Best-effort: an unreadable tree just yields no extra commands.
-    private List<SlashCommand> DiscoverProjectCommands()
+    private static void OpenCombo(ComboBox combo)
     {
-        ThreadHelper.ThrowIfNotOnUIThread();
+        combo.Focus();
+        combo.IsDropDownOpen = true;
+    }
+
+    /// <summary>The developer's own ~/.claude folder, where their personal commands and agents live.</summary>
+    private static string UserClaudeDir(string leaf)
+    {
+        try
+        {
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return string.IsNullOrEmpty(home) ? string.Empty : Path.Combine(home, ".claude", leaf);
+        }
+        catch { return string.Empty; }
+    }
+
+    // Reads custom slash commands from a commands folder (nested folders become "dir:name", matching
+    // the CLI's own naming). Best-effort: an unreadable tree just yields no extra commands.
+    private static List<SlashCommand> DiscoverCommands(string commandsDir, string origin)
+    {
         var result = new List<SlashCommand>();
         try
         {
-            string dir = WorkingDirectory();
-            if (string.IsNullOrEmpty(dir)) return result;
-            string commandsDir = Path.Combine(dir, ".claude", "commands");
-            if (!Directory.Exists(commandsDir)) return result;
+            if (string.IsNullOrEmpty(commandsDir) || !Directory.Exists(commandsDir)) return result;
 
             foreach (string file in Directory.EnumerateFiles(commandsDir, "*.md", SearchOption.AllDirectories))
             {
                 string rel = file.Substring(commandsDir.Length).TrimStart('\\', '/');
                 string name = rel.Substring(0, rel.Length - ".md".Length).Replace('\\', ':').Replace('/', ':');
                 if (name.Length == 0) continue;
-                result.Add(new SlashCommand { Name = name, Description = FirstMeaningfulLine(file) });
+
+                string description = FirstMeaningfulLine(file);
+                result.Add(new SlashCommand
+                {
+                    Name = name,
+                    Description = description.Length == 0 ? origin : origin + " - " + description,
+                });
             }
         }
         catch { /* unreadable tree - no custom commands */ }
@@ -2606,20 +2777,63 @@ internal sealed class AgentPanelControl : UserControl
         {
             SetMicActive(false);
             string? wav = _recorder.StopAndSave();
-            if (wav == null) { _status.Text = Loc("micFailed"); return; }
+            if (wav == null) { _status.Text = Loc("micSaveFailed"); return; }
             await TranscribeAsync(wav);
             return;
         }
 
-        if (!SpeechCommand.IsConfigured(ExtensionOptions.SpeechToTextCommand))
-        {
-            _status.Text = Loc("sttNotSet");
-            return;
-        }
+        _status.Text = Loc("micChecking");
+        string? engine = await ResolveSpeechCommandAsync();
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        if (engine == null) { _status.Text = Loc("sttNoEngine"); return; }
 
         if (!_recorder.Start()) { _status.Text = Loc("micFailed"); return; }
         SetMicActive(true);
         _status.Text = Loc("recording");
+    }
+
+    // Finds something that can transcribe. A command set in Options always wins; otherwise look for
+    // what the machine already has - a Python with faster-whisper - and write the small script that
+    // drives it. Probed once per panel: the answer does not change while Visual Studio is running.
+    private async System.Threading.Tasks.Task<string?> ResolveSpeechCommandAsync()
+    {
+        if (SpeechCommand.IsConfigured(ExtensionOptions.SpeechToTextCommand))
+            return ExtensionOptions.SpeechToTextCommand;
+
+        if (_speechProbed) return _speechCommand;
+        _speechProbed = true;
+
+        foreach (string python in new[] { "python", "py", "python3" })
+        {
+            var (ok, _) = await RunProcessAsync(python, "-c \"import faster_whisper\"", string.Empty);
+            if (!ok) continue;
+
+            string? script = WriteTranscriberScript();
+            if (script == null) break;
+            _speechCommand = SpeechCommand.ComposeDefault(python, script);
+            break;
+        }
+
+        return _speechCommand;
+    }
+
+    // Writes the fallback transcriber next to the extension's own data, once. Never overwrites: if
+    // the developer has edited it, that edit is theirs to keep.
+    private static string? WriteTranscriberScript()
+    {
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "nLabtech", "ClaudeCodeVs");
+            Directory.CreateDirectory(dir);
+
+            string path = Path.Combine(dir, "transcribe.py");
+            if (!File.Exists(path))
+                File.WriteAllText(path, SpeechCommand.LocalScript, new System.Text.UTF8Encoding(false));
+            return path;
+        }
+        catch { return null; }
     }
 
     // Runs the configured engine over the recording and drops the text into the input. The WAV is
@@ -2629,8 +2843,20 @@ internal sealed class AgentPanelControl : UserControl
         _status.Text = Loc("transcribing");
         try
         {
-            var (fileName, arguments) = SpeechCommand.Compose(ExtensionOptions.SpeechToTextCommand, wavPath);
-            var (ok, output) = await RunProcessAsync(fileName, arguments, System.IO.Path.GetTempPath());
+            string? template = await ResolveSpeechCommandAsync();
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+            if (template == null) { _status.Text = Loc("sttNoEngine"); return; }
+
+            var (fileName, arguments) = SpeechCommand.Compose(template, wavPath);
+
+            // Five minutes, not fifteen seconds: the first run of a local speech model loads it from
+            // disk, and cutting that off would look like a broken feature rather than a slow one.
+            var (ok, output, timedOut) = await RunProcessDetailedAsync(
+                fileName, arguments, System.IO.Path.GetTempPath(), 300000);
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            if (timedOut) { _status.Text = Loc("sttTimeout"); return; }
+
             string text = ok ? SpeechCommand.CleanTranscript(output) : string.Empty;
 
             if (text.Length == 0)

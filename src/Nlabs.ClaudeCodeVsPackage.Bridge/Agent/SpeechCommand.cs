@@ -22,6 +22,52 @@ public static class SpeechCommand
     public static bool IsConfigured(string? template) => !string.IsNullOrWhiteSpace(template);
 
     /// <summary>
+    /// The transcriber the extension falls back to when nothing has been configured: a few lines of
+    /// Python over faster-whisper, written to the machine on first use. Still nothing bundled - it
+    /// runs only if the developer already has Python and faster-whisper, and it is plain text they
+    /// can read, edit or delete. Transcription stays local; no audio leaves the machine.
+    /// </summary>
+    public const string LocalScript = @"""""""Transcribe one audio file with faster-whisper and print the text.
+
+Written by the Claude Code (nLabtech) Visual Studio extension the first time dictation is
+used. It is yours: edit it, point it at another model, or delete it. The extension only
+writes it when it is missing.
+""""""
+import sys
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.stderr.write(""usage: transcribe.py <audio> [model]\n"")
+        return 2
+
+    try:
+        sys.stdout.reconfigure(encoding=""utf-8"")
+    except Exception:
+        pass
+
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        sys.stderr.write(""faster-whisper is not installed\n"")
+        return 3
+
+    model_name = sys.argv[2] if len(sys.argv) > 2 else ""large-v3-turbo""
+    model = WhisperModel(model_name, device=""cpu"", compute_type=""int8"")
+    segments, _info = model.transcribe(sys.argv[1], vad_filter=True)
+    sys.stdout.write("" "".join(s.text.strip() for s in segments).strip())
+    return 0
+
+
+if __name__ == ""__main__"":
+    sys.exit(main())
+";
+
+    /// <summary>Builds the command line for the local transcriber script.</summary>
+    public static string ComposeDefault(string pythonExe, string scriptPath) =>
+        "\"" + pythonExe + "\" \"" + scriptPath + "\" \"" + AudioPlaceholder + "\"";
+
+    /// <summary>
     /// Splits the template into an executable and its arguments, with the placeholder replaced by
     /// the recording's path. A path containing spaces is quoted unless the template already quoted
     /// the placeholder itself.

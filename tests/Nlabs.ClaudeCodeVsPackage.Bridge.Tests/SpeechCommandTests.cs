@@ -73,6 +73,24 @@ public class SpeechCommandTests
     }
 
     [Fact]
+    public void ComposeDefault_survives_a_round_trip_through_Compose()
+    {
+        string template = SpeechCommand.ComposeDefault(@"C:\Program Files\Python\python.exe", @"C:\tools\transcribe.py");
+        var (file, args) = SpeechCommand.Compose(template, @"C:\my temp\a.wav");
+
+        Assert.Equal(@"C:\Program Files\Python\python.exe", file);
+        Assert.Equal("\"C:\\tools\\transcribe.py\" \"C:\\my temp\\a.wav\"", args);
+    }
+
+    [Fact]
+    public void LocalScript_is_plain_ascii_and_transcribes_its_first_argument()
+    {
+        Assert.All(SpeechCommand.LocalScript, ch => Assert.True(ch < 128, "non-ASCII character in the script"));
+        Assert.Contains("faster_whisper", SpeechCommand.LocalScript);
+        Assert.Contains("sys.argv[1]", SpeechCommand.LocalScript);
+    }
+
+    [Fact]
     public void CleanTranscript_tolerates_empty_output()
     {
         Assert.Equal(string.Empty, SpeechCommand.CleanTranscript(null));
