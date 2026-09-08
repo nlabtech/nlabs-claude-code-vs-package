@@ -1948,7 +1948,7 @@ internal sealed class AgentPanelControl : UserControl
 
         var line = new TextBlock
         {
-            Text = string.Join("  ·  ", parts),
+            Text = string.Join("  \u00B7  ", parts),
             FontSize = 10,
             Opacity = 0.45,
             Margin = new Thickness(14, 0, 8, 6),
