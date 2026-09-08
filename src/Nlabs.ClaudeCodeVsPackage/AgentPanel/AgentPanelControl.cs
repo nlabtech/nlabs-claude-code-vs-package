@@ -169,6 +169,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["sttNotSet"] = "Set a speech-to-text command in Tools > Options > Claude Code (nLabtech).",
                 ["sttFailed"] = "The speech-to-text command failed.", ["sttEmpty"] = "Nothing was recognised.",
                 ["bypassMode"] = "Bypass permissions",
+                ["imageZoom"] = "Click to see it full size", ["imageTooMany"] = "Up to {0} images per message.",
+                ["agentProject"] = "This project", ["agentUser"] = "Yours",
                 ["emptyTitle"] = "Claude Code, in Visual Studio",
                 ["emptyBody"] = "Ask a question, describe a change, or hand over a task. Claude works in the folder shown below and asks before it runs anything.",
                 ["hintSlash"] = "commands - the panel's own and the CLI's",
@@ -230,6 +232,8 @@ internal sealed class AgentPanelControl : UserControl
                 ["sttNotSet"] = "Tools > Options > Claude Code (nLabtech) altinda konusma-yazi komutunu ayarla.",
                 ["sttFailed"] = "Konusma-yazi komutu basarisiz oldu.", ["sttEmpty"] = "Hicbir sey anlasilmadi.",
                 ["bypassMode"] = "Izinleri atla",
+                ["imageZoom"] = "Tam boyut icin tikla", ["imageTooMany"] = "Mesaj basina en fazla {0} gorsel.",
+                ["agentProject"] = "Bu proje", ["agentUser"] = "Senin",
                 ["emptyTitle"] = "Visual Studio icinde Claude Code",
                 ["emptyBody"] = "Bir soru sor, bir degisiklik anlat ya da isi devret. Claude asagida yazan klasorde calisir ve bir sey calistirmadan once sorar.",
                 ["hintSlash"] = "komutlar - panelin kendi komutlari ve CLI'ninkiler",
@@ -1001,13 +1005,18 @@ internal sealed class AgentPanelControl : UserControl
             var strip = new WrapPanel { Margin = new Thickness(0, 0, 0, text.Length > 0 ? 6 : 0) };
             foreach (PendingImage img in images)
             {
-                strip.Children.Add(new Image
+                PendingImage captured = img;
+                var thumb = new Image
                 {
                     Source = img.Thumb,
                     Height = 54,
                     Margin = new Thickness(0, 0, 6, 0),
                     Stretch = Stretch.Uniform,
-                });
+                    Cursor = Cursors.Hand,
+                    ToolTip = Loc("imageZoom"),
+                };
+                thumb.MouseLeftButtonUp += (_, __) => ShowImageZoom(captured.Base64);
+                strip.Children.Add(thumb);
             }
             stack.Children.Add(strip);
         }
@@ -3038,23 +3047,41 @@ internal sealed class AgentPanelControl : UserControl
     private void ShowSubagentMenu(UIElement anchor)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        var menu = new ContextMenu { PlacementTarget = anchor, Placement = PlacementMode.Top };
-        List<(string Name, string Description)> agents = DiscoverSubagents();
+        var menu = new ContextMenu { PlacementTarget = anchor, Placement = PlacementMode.Top, MaxHeight = 520 };
+        List<(string Name, string Description, bool FromProject)> agents = DiscoverSubagents();
         if (agents.Count == 0)
         {
             menu.Items.Add(new MenuItem { Header = Loc("noAgents"), IsEnabled = false });
+            menu.IsOpen = true;
+            return;
         }
-        else
+
+        // Grouped by where they came from, because "the project defines this one" is the difference
+        // that decides whether a teammate has it too. The header stays a plain string so the menu's
+        // own type-ahead keeps working - with dozens of agents, typing the name is how it is used.
+        bool wroteProjectHeader = false;
+        bool wroteUserHeader = false;
+        foreach ((string Name, string Description, bool FromProject) a in agents)
         {
-            foreach ((string Name, string Description) a in agents)
+            if (a.FromProject && !wroteProjectHeader)
             {
-                string name = a.Name;
-                var item = new MenuItem { Header = name };
-                if (!string.IsNullOrEmpty(a.Description)) item.ToolTip = a.Description;
-                item.Click += (_, __) => InsertSubagent(name);
-                menu.Items.Add(item);
+                menu.Items.Add(new MenuItem { Header = Loc("agentProject"), IsEnabled = false });
+                wroteProjectHeader = true;
             }
+            else if (!a.FromProject && !wroteUserHeader)
+            {
+                if (wroteProjectHeader) menu.Items.Add(new Separator());
+                menu.Items.Add(new MenuItem { Header = Loc("agentUser"), IsEnabled = false });
+                wroteUserHeader = true;
+            }
+
+            string name = a.Name;
+            var item = new MenuItem { Header = name };
+            if (!string.IsNullOrEmpty(a.Description)) item.ToolTip = a.Description;
+            item.Click += (_, __) => InsertSubagent(name);
+            menu.Items.Add(item);
         }
+
         menu.IsOpen = true;
     }
 
@@ -3069,36 +3096,43 @@ internal sealed class AgentPanelControl : UserControl
 
     // Discovers subagents from the project's and the developer's .claude/agents folders, de-duplicated
     // by name (project wins) and sorted. Best-effort: an unreadable folder just contributes nothing.
-    private List<(string Name, string Description)> DiscoverSubagents()
+    private List<(string Name, string Description, bool FromProject)> DiscoverSubagents()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        var found = new List<(string, string)>();
+        var found = new List<(string, string, bool)>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string root in SubagentRoots())
+
+        foreach ((string Root, bool FromProject) source in SubagentRoots())
         {
             try
             {
-                if (!Directory.Exists(root)) continue;
-                foreach (string file in Directory.EnumerateFiles(root, "*.md", SearchOption.AllDirectories))
+                if (!Directory.Exists(source.Root)) continue;
+                foreach (string file in Directory.EnumerateFiles(source.Root, "*.md", SearchOption.AllDirectories))
                 {
                     string name = FrontmatterValue(file, "name") ?? Path.GetFileNameWithoutExtension(file);
                     if (string.IsNullOrEmpty(name) || !seen.Add(name)) continue;
-                    found.Add((name, FrontmatterValue(file, "description") ?? string.Empty));
+                    found.Add((name, FrontmatterValue(file, "description") ?? string.Empty, source.FromProject));
                 }
             }
             catch { /* unreadable folder - skip it */ }
         }
-        found.Sort((x, y) => string.Compare(x.Item1, y.Item1, StringComparison.OrdinalIgnoreCase));
+
+        // Project agents first, then each group by name: the grouping is what the menu draws.
+        found.Sort((x, y) =>
+        {
+            if (x.Item3 != y.Item3) return x.Item3 ? -1 : 1;
+            return string.Compare(x.Item1, y.Item1, StringComparison.OrdinalIgnoreCase);
+        });
         return found;
     }
 
-    private IEnumerable<string> SubagentRoots()
+    private IEnumerable<(string Root, bool FromProject)> SubagentRoots()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
         string dir = WorkingDirectory();
-        if (!string.IsNullOrEmpty(dir)) yield return Path.Combine(dir, ".claude", "agents");
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (!string.IsNullOrEmpty(home)) yield return Path.Combine(home, ".claude", "agents");
+        if (!string.IsNullOrEmpty(dir)) yield return (Path.Combine(dir, ".claude", "agents"), true);
+        string home = UserClaudeDir("agents");
+        if (!string.IsNullOrEmpty(home)) yield return (home, false);
     }
 
     // Reads one frontmatter value (e.g. name, description) from the head of a command/agent .md file.
@@ -3289,10 +3323,64 @@ internal sealed class AgentPanelControl : UserControl
         return bmp;
     }
 
+    // Six is not a technical limit: it is the point past which a turn is carrying more pictures than
+    // instruction, and the CLI is being paid per image to guess what they were for.
+    private const int MaxImages = 6;
+
     private void AddPending(PendingImage img)
     {
+        if (_pending.Count >= MaxImages)
+        {
+            _status.Text = string.Format(Loc("imageTooMany"), MaxImages);
+            return;
+        }
         _pending.Add(img);
         RefreshAttachStrip();
+    }
+
+    // Opens one attachment full size. A 46px thumbnail is enough to tell two screenshots apart and
+    // not enough to check what a screenshot actually shows.
+    private void ShowImageZoom(string base64)
+    {
+        BitmapSource? full = DecodeBase64(base64);
+        if (full == null) return;
+
+        // Qualified: EnvDTE has a Window too, and this file sees both.
+        var window = new System.Windows.Window
+        {
+            Content = new Border { Background = Brushes.Black, Child = new Image { Source = full, Stretch = Stretch.Uniform } },
+            SizeToContent = SizeToContent.WidthAndHeight,
+            MaxWidth = SystemParameters.WorkArea.Width * 0.9,
+            MaxHeight = SystemParameters.WorkArea.Height * 0.9,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ShowInTaskbar = false,
+            Title = Loc("imageZoom"),
+        };
+        window.MouseLeftButtonUp += (_, __) => window.Close();
+        window.KeyDown += (_, e) => { if (e.Key == Key.Escape) window.Close(); };
+
+        System.Windows.Window? owner = System.Windows.Window.GetWindow(this);
+        if (owner != null) window.Owner = owner;
+        window.ShowDialog();
+    }
+
+    private static BitmapSource? DecodeBase64(string base64)
+    {
+        try
+        {
+            byte[] bytes = Convert.FromBase64String(base64);
+            using (var stream = new System.IO.MemoryStream(bytes))
+            {
+                var bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.StreamSource = stream;
+                bmp.EndInit();
+                bmp.Freeze();
+                return bmp;
+            }
+        }
+        catch { return null; }
     }
 
     // Removes the pending images from the strip and hands them back so the turn can send them.
@@ -3321,7 +3409,9 @@ internal sealed class AgentPanelControl : UserControl
         foreach (PendingImage img in _pending)
         {
             PendingImage captured = img;
-            var thumb = new Image { Source = img.Thumb, Height = 46, Stretch = Stretch.Uniform };
+            var thumb = new Image { Source = img.Thumb, Height = 46, Stretch = Stretch.Uniform, Cursor = Cursors.Hand };
+            thumb.ToolTip = Loc("imageZoom");
+            thumb.MouseLeftButtonUp += (_, __) => ShowImageZoom(captured.Base64);
             var remove = new TextBlock
             {
                 Text = "x",
