@@ -203,6 +203,7 @@ internal sealed class AgentPanelControl : UserControl
     private TextBlock? _undoLabel;
     private Border? _bridgeDot;        // approval-bridge indicator: bright when the endpoint is live
     private TextBlock? _bridgeLabel;
+    private TextBlock? _usageLabel;    // subscription usage (5h / 7d windows), from rate_limit_event
 
     public AgentPanelControl()
     {
@@ -623,11 +624,18 @@ internal sealed class AgentPanelControl : UserControl
         bridgePanel.Children.Add(_bridgeDot);
         bridgePanel.Children.Add(_bridgeLabel);
 
+        // Subscription usage (5h / 7d windows). Sits left of the bridge indicator; hidden until the
+        // first rate_limit_event arrives.
+        _usageLabel = new TextBlock { FontSize = 11, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
+        _usageLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
         var statusBar = new DockPanel { Margin = new Thickness(4, 7, 4, 0), LastChildFill = true };
         DockPanel.SetDock(leftStatus, Dock.Left);
         DockPanel.SetDock(bridgePanel, Dock.Right);
+        DockPanel.SetDock(_usageLabel, Dock.Right);
         statusBar.Children.Add(leftStatus);
         statusBar.Children.Add(bridgePanel);
+        statusBar.Children.Add(_usageLabel);
         statusBar.Children.Add(_status);
 
         var composer = new StackPanel { Margin = new Thickness(12, 6, 12, 12) };
@@ -847,6 +855,14 @@ internal sealed class AgentPanelControl : UserControl
                 {
                     _streamingText = e.Text!;
                     _renderPending = true;
+                }
+                break;
+
+            case CliEventKind.RateLimit:
+                if (e.RateLimit != null)
+                {
+                    RateLimitStatus usage = e.RateLimit;
+                    OnUi(() => UpdateUsage(usage));
                 }
                 break;
 
@@ -1952,6 +1968,51 @@ internal sealed class AgentPanelControl : UserControl
         bool on = _approval != null;
         if (_bridgeDot != null) _bridgeDot.Opacity = on ? 1.0 : 0.25;
         if (_bridgeLabel != null) _bridgeLabel.Text = Loc(on ? "bridgeOn" : "bridgeOff");
+    }
+
+    // Shows subscription usage in the status bar ("5h 2%  -  7d 40%"); turns accent when near a limit.
+    private void UpdateUsage(RateLimitStatus usage)
+    {
+        if (_usageLabel == null) return;
+        _usageLabel.Text = FormatUsage(usage);
+        if (usage.Warning)
+        {
+            _usageLabel.Foreground = Accent;
+            _usageLabel.Opacity = 1.0;
+        }
+        else
+        {
+            _usageLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            _usageLabel.Opacity = 0.6;
+        }
+        if (usage.MostFull?.ResetsAt != null)
+        {
+            _usageLabel.ToolTip = string.Format("{0}: resets {1}", ShortWindow(usage.MostFull.Name),
+                usage.MostFull.ResetsAt.Value.ToLocalTime().ToString("t", System.Globalization.CultureInfo.CurrentCulture));
+        }
+    }
+
+    // A compact usage line: the windows the CLI reported, each as a short name and a percentage.
+    private static string FormatUsage(RateLimitStatus usage)
+    {
+        var parts = new System.Collections.Generic.List<string>();
+        foreach (RateLimitWindow w in usage.Windows)
+        {
+            parts.Add(ShortWindow(w.Name) + " " + (int)Math.Round(w.Utilization * 100) + "%");
+            if (parts.Count >= 3) break;
+        }
+        return string.Join("  ·  ", parts);
+    }
+
+    private static string ShortWindow(string name)
+    {
+        switch (name)
+        {
+            case "five_hour": return "5h";
+            case "seven_day": return "7d";
+            case "seven_day_opus": return "7d Opus";
+            default: return name;
+        }
     }
 
     // Sends a read-only review of the working tree as a turn, reusing the normal send path (so it

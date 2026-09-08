@@ -18,6 +18,8 @@ public enum CliEventKind
     StreamDelta,
     /// <summary>Turn finished: total cost, success/failure.</summary>
     Result,
+    /// <summary>A subscription usage update (rate_limit_event).</summary>
+    RateLimit,
     /// <summary>A line that could not be parsed as JSON.</summary>
     Unknown,
 }
@@ -43,6 +45,49 @@ public sealed class ToolCall
     public string Summary { get; set; } = string.Empty;
 }
 
+/// <summary>One subscription usage window (5-hour, 7-day, ...) and how full it is.</summary>
+public sealed class RateLimitWindow
+{
+    /// <summary>The CLI's key: <c>five_hour</c>, <c>seven_day</c>, <c>seven_day_opus</c>, ...</summary>
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Fill fraction, 0..1.</summary>
+    public double Utilization { get; set; }
+    /// <summary>When the window resets; null when the CLI did not say.</summary>
+    public DateTimeOffset? ResetsAt { get; set; }
+}
+
+/// <summary>
+/// Subscription usage, from the CLI's <c>rate_limit_event</c>. The turn's own
+/// <c>result.total_cost_usd</c> only says what this turn spent - it never answers "how much of my
+/// limit is left", which otherwise means dropping to a terminal to check. Windows are read
+/// generically: whatever sits under <c>unifiedWindows</c> is shown, so a new window the CLI adds
+/// later still surfaces (its key stands in when there is no friendly name).
+/// </summary>
+public sealed class RateLimitStatus
+{
+    /// <summary><c>allowed</c>, <c>allowed_warning</c> or <c>rejected</c>.</summary>
+    public string Status { get; set; } = string.Empty;
+    public System.Collections.Generic.IReadOnlyList<RateLimitWindow> Windows { get; set; }
+        = System.Array.Empty<RateLimitWindow>();
+
+    /// <summary>True when usage is near or past a limit (anything other than plain <c>allowed</c>).</summary>
+    public bool Warning => !string.Equals(Status, "allowed", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The fullest window - the one a single-line summary is built from.</summary>
+    public RateLimitWindow? MostFull
+    {
+        get
+        {
+            RateLimitWindow? top = null;
+            foreach (RateLimitWindow w in Windows)
+            {
+                if (top == null || w.Utilization > top.Utilization) top = w;
+            }
+            return top;
+        }
+    }
+}
+
 /// <summary>One parsed event from the CLI's stream-json output.</summary>
 public sealed class CliEvent
 {
@@ -62,6 +107,9 @@ public sealed class CliEvent
 
     /// <summary>The tools this assistant turn invoked, in order; null when it called none.</summary>
     public System.Collections.Generic.IReadOnlyList<ToolCall>? Tools { get; set; }
+
+    /// <summary>Subscription usage when this line was a rate_limit_event; null otherwise.</summary>
+    public RateLimitStatus? RateLimit { get; set; }
 }
 
 /// <summary>
@@ -179,6 +227,14 @@ public static class CliStreamProtocol
                     Raw = line,
                 };
 
+            case "rate_limit_event":
+                return new CliEvent
+                {
+                    Kind = CliEventKind.RateLimit,
+                    RateLimit = ParseRateLimit(obj["rate_limit_info"] as JObject),
+                    Raw = line,
+                };
+
             default:
                 return new CliEvent { Kind = CliEventKind.Unknown, Raw = line };
         }
@@ -257,6 +313,59 @@ public static class CliStreamProtocol
         s = s!.Replace('\r', ' ').Replace('\n', ' ').Trim();
         const int max = 120;
         return s.Length <= max ? s : s.Substring(0, max) + "...";
+    }
+
+    // Reads a rate_limit_info body into a RateLimitStatus. Windows are read generically from
+    // unifiedWindows so an unknown/new window still shows; an unrecognised shape yields null.
+    private static RateLimitStatus? ParseRateLimit(JObject? info)
+    {
+        if (info == null) return null;
+
+        var windows = new System.Collections.Generic.List<RateLimitWindow>();
+        if (info["unifiedWindows"] is JObject unified)
+        {
+            foreach (JProperty prop in unified.Properties())
+            {
+                if (!(prop.Value is JObject w)) continue;
+                double? util = (double?)w["utilization"];
+                if (util == null) continue;
+                windows.Add(new RateLimitWindow
+                {
+                    Name = prop.Name,
+                    Utilization = util.Value,
+                    ResetsAt = ParseReset(w["resetsAt"]),
+                });
+            }
+        }
+        if (windows.Count == 0 && info["status"] == null) return null;
+
+        return new RateLimitStatus
+        {
+            Status = (string?)info["status"] ?? string.Empty,
+            Windows = windows,
+        };
+    }
+
+    // resetsAt may arrive as an ISO-8601 string or an epoch number (seconds or milliseconds).
+    private static DateTimeOffset? ParseReset(JToken? token)
+    {
+        if (token == null || token.Type == JTokenType.Null) return null;
+        try
+        {
+            if (token.Type == JTokenType.Date) return (DateTimeOffset)token;
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                double n = (double)token;
+                // Heuristic: > 1e12 is milliseconds, otherwise seconds.
+                return n > 1e12
+                    ? DateTimeOffset.FromUnixTimeMilliseconds((long)n)
+                    : DateTimeOffset.FromUnixTimeSeconds((long)n);
+            }
+            string? s = (string?)token;
+            if (!string.IsNullOrEmpty(s) && DateTimeOffset.TryParse(s, out DateTimeOffset dto)) return dto;
+        }
+        catch { /* unrecognised time - leave null */ }
+        return null;
     }
 
     private static string JoinTextBlocks(JArray? content)

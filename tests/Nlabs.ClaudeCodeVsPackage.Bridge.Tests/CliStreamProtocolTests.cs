@@ -164,4 +164,29 @@ public class CliStreamProtocolTests
         Assert.Equal(CliEventKind.Unknown, e.Kind);
         Assert.Equal("this is not json", e.Raw);
     }
+
+    [Fact]
+    public void Parse_rate_limit_event_reads_status_and_windows()
+    {
+        var e = CliStreamProtocol.Parse(
+            "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed_warning\"," +
+            "\"unifiedWindows\":{\"five_hour\":{\"utilization\":0.02},\"seven_day\":{\"utilization\":0.4}}}}");
+
+        Assert.Equal(CliEventKind.RateLimit, e.Kind);
+        Assert.NotNull(e.RateLimit);
+        Assert.True(e.RateLimit!.Warning); // allowed_warning is a warning state
+        Assert.Equal(2, e.RateLimit.Windows.Count);
+        Assert.Equal("seven_day", e.RateLimit.MostFull!.Name); // 0.4 > 0.02
+    }
+
+    [Fact]
+    public void Parse_rate_limit_event_reads_the_reset_time_from_epoch_seconds()
+    {
+        var e = CliStreamProtocol.Parse(
+            "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"," +
+            "\"unifiedWindows\":{\"five_hour\":{\"utilization\":0.1,\"resetsAt\":1756700000}}}}");
+
+        Assert.False(e.RateLimit!.Warning); // plain allowed is not a warning
+        Assert.NotNull(e.RateLimit.Windows[0].ResetsAt);
+    }
 }
