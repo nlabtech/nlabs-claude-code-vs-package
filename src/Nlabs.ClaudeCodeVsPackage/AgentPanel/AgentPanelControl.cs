@@ -168,6 +168,19 @@ internal sealed class AgentPanelControl : UserControl
                 ["transcribing"] = "Transcribing...", ["micFailed"] = "No microphone was available.",
                 ["sttNotSet"] = "Set a speech-to-text command in Tools > Options > Claude Code (nLabtech).",
                 ["sttFailed"] = "The speech-to-text command failed.", ["sttEmpty"] = "Nothing was recognised.",
+                ["bypassMode"] = "Bypass permissions",
+                ["emptyTitle"] = "Claude Code, in Visual Studio",
+                ["emptyBody"] = "Ask a question, describe a change, or hand over a task. Claude works in the folder shown below and asks before it runs anything.",
+                ["hintSlash"] = "commands - the panel's own and the CLI's",
+                ["hintAt"] = "mention a file or folder from this workspace",
+                ["hintImage"] = "attach an image, or just paste one",
+                ["hintMic"] = "dictate instead of typing",
+                ["resetsIn"] = "resets in", ["resetSoon"] = "resetting now",
+                ["unitDay"] = "d", ["unitHour"] = "h", ["unitMinute"] = "m",
+                ["limitNear"] = "Near the limit.", ["limitUnknown"] = "No usage reported yet.",
+                ["stopped"] = "Stopped - your next message starts a new session.", ["connected"] = "Connected.",
+                ["stalled"] = "still working",
+                ["workingVerbs"] = "Thinking...|Reading...|Working...|Writing...|Checking...",
                 ["micChecking"] = "Looking for a speech engine...",
                 ["micSaveFailed"] = "The recording could not be saved.",
                 ["sttTimeout"] = "Transcription took too long and was stopped.",
@@ -216,6 +229,19 @@ internal sealed class AgentPanelControl : UserControl
                 ["transcribing"] = "Yaziya cevriliyor...", ["micFailed"] = "Mikrofon bulunamadi.",
                 ["sttNotSet"] = "Tools > Options > Claude Code (nLabtech) altinda konusma-yazi komutunu ayarla.",
                 ["sttFailed"] = "Konusma-yazi komutu basarisiz oldu.", ["sttEmpty"] = "Hicbir sey anlasilmadi.",
+                ["bypassMode"] = "Izinleri atla",
+                ["emptyTitle"] = "Visual Studio icinde Claude Code",
+                ["emptyBody"] = "Bir soru sor, bir degisiklik anlat ya da isi devret. Claude asagida yazan klasorde calisir ve bir sey calistirmadan once sorar.",
+                ["hintSlash"] = "komutlar - panelin kendi komutlari ve CLI'ninkiler",
+                ["hintAt"] = "bu calisma alanindan bir dosya ya da klasor an",
+                ["hintImage"] = "gorsel ekle, ya da dogrudan yapistir",
+                ["hintMic"] = "yazmak yerine konus",
+                ["resetsIn"] = "sifirlanmasina", ["resetSoon"] = "simdi sifirlaniyor",
+                ["unitDay"] = "g", ["unitHour"] = "sa", ["unitMinute"] = "dk",
+                ["limitNear"] = "Limite yaklasildi.", ["limitUnknown"] = "Henuz kullanim bildirilmedi.",
+                ["stopped"] = "Durduruldu - sonraki mesajin yeni bir oturum baslatir.", ["connected"] = "Baglandi.",
+                ["stalled"] = "hala calisiyor",
+                ["workingVerbs"] = "Dusunuyor...|Okuyor...|Calisiyor...|Yaziyor...|Kontrol ediyor...",
                 ["micChecking"] = "Konusma motoru araniyor...",
                 ["micSaveFailed"] = "Kayit kaydedilemedi.",
                 ["sttTimeout"] = "Yaziya cevirme cok uzun surdu, durduruldu.",
@@ -253,6 +279,8 @@ internal sealed class AgentPanelControl : UserControl
     private readonly VoiceRecorder _recorder = new VoiceRecorder();
     private string? _speechCommand;  // the transcriber found on this machine, if any
     private bool _speechProbed;      // looked for one already - the answer will not change
+    private StackPanel? _emptyState; // the welcome block, shown only while the feed is empty
+    private DateTime _lastEventAt;   // when the CLI last said anything, so a stall can be named
     private Border? _micButton;
     private List<string>? _pathCache;   // workspace paths for "@" completion, rebuilt on a timer
     private string _pathCacheDir = string.Empty;
@@ -321,7 +349,12 @@ internal sealed class AgentPanelControl : UserControl
         // Tier aliases, not pinned versions - each resolves to the latest model of that tier, so the
         // list doesn't go stale as new releases land.
         _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Fable", "fable") });
-        _modeCombo = MakeCombo(new (string, string?)[] { ("Ask each time", null), ("Accept edits", "acceptEdits"), ("Plan mode", "plan") });
+        // The CLI's four permission modes, in order of how much they hand over. "Bypass" is last and
+        // named plainly: it stops the panel asking at all, which is a decision, not a convenience.
+        _modeCombo = MakeCombo(new (string, string?)[]
+        {
+            ("Ask each time", null), ("Accept edits", "acceptEdits"), ("Plan mode", "plan"), ("Bypass permissions", "bypassPermissions"),
+        });
         _effortCombo = MakeCombo(new (string, string?)[]
         {
             ("Effort: default", null), ("Low", "low"), ("Medium", "medium"), ("High", "high"), ("xHigh", "xhigh"), ("Max", "max"),
@@ -331,6 +364,7 @@ internal sealed class AgentPanelControl : UserControl
         Bind(() => ((ComboBoxItem)_modeCombo.Items[0]).Content = Loc("askEach"));
         Bind(() => ((ComboBoxItem)_modeCombo.Items[1]).Content = Loc("acceptEdits"));
         Bind(() => ((ComboBoxItem)_modeCombo.Items[2]).Content = Loc("planMode"));
+        Bind(() => ((ComboBoxItem)_modeCombo.Items[3]).Content = Loc("bypassMode"));
         Bind(() => ((ComboBoxItem)_effortCombo.Items[0]).Content = Loc("defaultEffort"));
         _convCombo = new ComboBox
         {
@@ -865,7 +899,7 @@ internal sealed class AgentPanelControl : UserControl
             options.ApprovalToken = _approval.Token;
         }
         _session.Start(WorkingDirectory(), options);
-        _status.Text = "Connected.";
+        _status.Text = Loc("connected");
         _ = CheckModelCatalogAsync(); // one-off, off the UI thread; never blocks the turn
     }
 
@@ -875,6 +909,8 @@ internal sealed class AgentPanelControl : UserControl
         // Ignore late events from a session that has been superseded (Stop, New, or a switch),
         // so a dying session cannot mutate the conversation that replaced it.
         if (!ReferenceEquals(sender, _session)) return;
+
+        _lastEventAt = DateTime.UtcNow; // the turn is alive; the working strip reads this
 
         if (e.Todos != null)
         {
@@ -1056,6 +1092,7 @@ internal sealed class AgentPanelControl : UserControl
         }
         line.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         line.Opacity = 0.85;
+        HideEmptyState();
         _messages.Children.Add(line);
         ScrollToEndIfAtBottom();
     }
@@ -1094,6 +1131,7 @@ internal sealed class AgentPanelControl : UserControl
             column.Children.Add(content);
         }
 
+        HideEmptyState();
         _messages.Children.Add(column);
         ScrollToEnd();
         return column;
@@ -1394,6 +1432,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             _status.Text = Loc("working");
             _turnStart = DateTime.UtcNow;
+            _lastEventAt = DateTime.UtcNow;
             _turnTokens = 0;
             _workingStrip.Visibility = Visibility.Visible;
             UpdateWorkingStrip();
@@ -1407,14 +1446,31 @@ internal sealed class AgentPanelControl : UserControl
         }
     }
 
-    // Refreshes the working strip: "Claude is working... 12s - 2.9k tokens".
+    // Refreshes the working strip: "Reading files...  12s  -  2.9k tokens". The verb rotates so a long
+    // turn still looks alive, and a turn that has gone quiet says so rather than counting in silence -
+    // waiting is fine, but not knowing whether anything is still happening is not.
     private void UpdateWorkingStrip()
     {
         int secs = (int)(DateTime.UtcNow - _turnStart).TotalSeconds;
         string tokens = _turnTokens >= 1000
             ? string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}k", _turnTokens / 1000.0)
             : _turnTokens.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        _workingLabel.Text = string.Format("{0}  {1}s  ·  {2} {3}", Loc("working"), secs, tokens, Loc("tokens"));
+
+        string line = string.Format("{0}  {1}s  ·  {2} {3}", WorkingVerb(secs), secs, tokens, Loc("tokens"));
+
+        int quiet = (int)(DateTime.UtcNow - _lastEventAt).TotalSeconds;
+        if (_lastEventAt != default(DateTime) && quiet >= 25) line += "  ·  " + Loc("stalled");
+
+        _workingLabel.Text = line;
+    }
+
+    // One of the language's working verbs, changing every few seconds. Falls back to the plain
+    // "working" line if the list is missing, so a translation gap cannot blank the strip.
+    private string WorkingVerb(int seconds)
+    {
+        string[] verbs = Loc("workingVerbs").Split('|');
+        if (verbs.Length == 0 || verbs[0].Length == 0) return Loc("working");
+        return verbs[(seconds / 6) % verbs.Length];
     }
 
     // Stops the running turn by ending the CLI process - the plain CLI has no client-answerable
@@ -1434,7 +1490,7 @@ internal sealed class AgentPanelControl : UserControl
         _streamingColumn = null;
         _streamingTextBlock = null;
         SetBusy(false);
-        _status.Text = "Stopped - your next message starts a new session.";
+        _status.Text = Loc("stopped");
     }
 
     // After a turn ends, send the next queued message (if any) as its own turn. Called from the UI
@@ -1571,6 +1627,7 @@ internal sealed class AgentPanelControl : UserControl
         if (records.Count == 0)
         {
             RegisterConversation(_current, select: true);
+            RebuildMessages(); // nothing to restore, so this is what paints the welcome block
             return;
         }
 
@@ -1648,12 +1705,80 @@ internal sealed class AgentPanelControl : UserControl
     private void RebuildMessages()
     {
         _messages.Children.Clear();
+        _messages.Children.Add(EnsureEmptyState());
+
         foreach (var (isUser, text) in _current.Messages)
         {
             if (isUser) AddUserBubble(text);
             else AddStoredAssistant(text);
         }
+
+        if (_current.Messages.Count == 0) ShowEmptyState();
         ScrollToEnd();
+    }
+
+    // The first thing a developer sees in an empty chat. It is built once and reused - rebuilding it
+    // per chat would register a new set of localizers each time - and only shown while the feed is
+    // empty, so it never sits above a conversation.
+    private StackPanel EnsureEmptyState()
+    {
+        if (_emptyState != null) return _emptyState;
+
+        var stack = new StackPanel { Margin = new Thickness(14, 20, 14, 8), Visibility = Visibility.Collapsed };
+
+        var title = new TextBlock { FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 4) };
+        title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        Bind(() => title.Text = Loc("emptyTitle"));
+        stack.Children.Add(title);
+
+        var body = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.7, Margin = new Thickness(0, 0, 0, 12) };
+        body.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        Bind(() => body.Text = Loc("emptyBody"));
+        stack.Children.Add(body);
+
+        stack.Children.Add(BuildHint("/", "hintSlash"));
+        stack.Children.Add(BuildHint("@", "hintAt"));
+        stack.Children.Add(BuildHint("+", "hintImage"));
+        stack.Children.Add(BuildHint("\U0001F3A4", "hintMic"));
+
+        // Offered here as well as in the status bar: choosing where Claude works is the one thing a
+        // developer may need to do before their first message.
+        Border folder = MakeGhostButton("pickFolder", PickFolder);
+        folder.HorizontalAlignment = HorizontalAlignment.Left;
+        folder.Margin = new Thickness(0, 14, 0, 0);
+        stack.Children.Add(folder);
+
+        _emptyState = stack;
+        return stack;
+    }
+
+    // One "type this, get that" line: the character in the accent colour, then what it does.
+    private UIElement BuildHint(string glyph, string key)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+
+        var mark = new TextBlock
+        {
+            Text = glyph,
+            FontFamily = MonoFont,
+            FontWeight = FontWeights.Bold,
+            Foreground = Accent,
+            MinWidth = 24,
+        };
+        var text = new TextBlock { Opacity = 0.75, TextWrapping = TextWrapping.Wrap };
+        text.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        Bind(() => text.Text = Loc(key));
+
+        row.Children.Add(mark);
+        row.Children.Add(text);
+        return row;
+    }
+
+    private void ShowEmptyState() => EnsureEmptyState().Visibility = Visibility.Visible;
+
+    private void HideEmptyState()
+    {
+        if (_emptyState != null) _emptyState.Visibility = Visibility.Collapsed;
     }
 
     private void SetConversationTitle(Conversation c, string text)
@@ -2237,11 +2362,33 @@ internal sealed class AgentPanelControl : UserControl
             _usageLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
             _usageLabel.Opacity = 0.6;
         }
-        if (usage.MostFull?.ResetsAt != null)
+        _usageLabel.ToolTip = BuildUsageTooltip(usage);
+    }
+
+    // The full picture behind the one-line summary: every window the CLI reported, how full it is and
+    // how long until it resets. A percentage alone does not answer "can I keep going this evening".
+    private string BuildUsageTooltip(RateLimitStatus usage)
+    {
+        var lines = new System.Collections.Generic.List<string>();
+        foreach (RateLimitWindow w in usage.Windows)
         {
-            _usageLabel.ToolTip = string.Format("{0}: resets {1}", ShortWindow(usage.MostFull.Name),
-                usage.MostFull.ResetsAt.Value.ToLocalTime().ToString("t", System.Globalization.CultureInfo.CurrentCulture));
+            string line = ShortWindow(w.Name) + "  " + (int)Math.Round(w.Utilization * 100) + "%";
+            if (w.ResetsAt != null) line += "  ·  " + Loc("resetsIn") + " " + Remaining(w.ResetsAt.Value);
+            lines.Add(line);
         }
+
+        if (usage.Warning) lines.Add(Loc("limitNear"));
+        return lines.Count == 0 ? Loc("limitUnknown") : string.Join(Environment.NewLine, lines);
+    }
+
+    // "3h 12m" - coarse on purpose, because the exact second is never the question being asked.
+    private string Remaining(DateTimeOffset resetsAt)
+    {
+        TimeSpan left = resetsAt - DateTimeOffset.Now;
+        if (left <= TimeSpan.Zero) return Loc("resetSoon");
+        if (left.TotalDays >= 1) return (int)left.TotalDays + Loc("unitDay") + " " + left.Hours + Loc("unitHour");
+        if (left.TotalHours >= 1) return (int)left.TotalHours + Loc("unitHour") + " " + left.Minutes + Loc("unitMinute");
+        return Math.Max(1, (int)left.TotalMinutes) + Loc("unitMinute");
     }
 
     // A compact usage line: the windows the CLI reported, each as a short name and a percentage.
