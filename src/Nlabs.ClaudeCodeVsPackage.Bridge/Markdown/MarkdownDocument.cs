@@ -23,12 +23,25 @@ public sealed class MarkdownBlock
     /// <summary>Fenced code language tag ("csharp", "" if none); empty for non-code.</summary>
     public string Language { get; }
 
-    public MarkdownBlock(MarkdownBlockKind kind, string text, int headingLevel = 0, string language = "")
+    /// <summary>
+    /// What a bullet is marked with: a dot for an unordered item, or the list's own number ("3.")
+    /// for an ordered one. Keeping the author's number rather than re-counting means a list that
+    /// starts at 5, or is interrupted by a paragraph, still reads the way it was written.
+    /// </summary>
+    public string Marker { get; }
+
+    /// <summary>Nesting depth of a bullet, in levels; 0 for a top-level item and every other block.</summary>
+    public int Indent { get; }
+
+    public MarkdownBlock(MarkdownBlockKind kind, string text, int headingLevel = 0, string language = "",
+        string marker = "", int indent = 0)
     {
         Kind = kind;
         Text = text;
         HeadingLevel = headingLevel;
         Language = language ?? string.Empty;
+        Marker = marker ?? string.Empty;
+        Indent = indent;
     }
 }
 
@@ -74,6 +87,32 @@ public static class MarkdownDocument
             if (paragraph.Count == 0) return;
             blocks.Add(new MarkdownBlock(MarkdownBlockKind.Paragraph, string.Join(" ", paragraph).Trim()));
             paragraph.Clear();
+        }
+
+        // How deep a list item sits: every two leading spaces (or one tab) is one level, capped so a
+        // deeply indented reply cannot push its own text off the panel.
+        int IndentLevel(string raw)
+        {
+            int spaces = 0;
+            foreach (char c in raw)
+            {
+                if (c == ' ') spaces++;
+                else if (c == '\t') spaces += 2;
+                else break;
+            }
+            return Math.Min(spaces / 2, 4);
+        }
+
+        // Length of a "12. " or "12) " marker including its trailing space, or 0 when there is none.
+        int OrderedMarkerLength(string text)
+        {
+            int digits = 0;
+            while (digits < text.Length && text[digits] >= '0' && text[digits] <= '9') digits++;
+            if (digits == 0 || digits > 3) return 0;
+            if (digits + 1 >= text.Length) return 0;
+            if (text[digits] != '.' && text[digits] != ')') return 0;
+            if (text[digits + 1] != ' ') return 0;
+            return digits + 2;
         }
 
         int i = 0;
@@ -124,7 +163,20 @@ public static class MarkdownDocument
             if (trimmed.Length >= 2 && (trimmed[0] == '-' || trimmed[0] == '*' || trimmed[0] == '+') && trimmed[1] == ' ')
             {
                 FlushParagraph();
-                blocks.Add(new MarkdownBlock(MarkdownBlockKind.Bullet, trimmed.Substring(2).Trim()));
+                blocks.Add(new MarkdownBlock(MarkdownBlockKind.Bullet, trimmed.Substring(2).Trim(),
+                    marker: "•", indent: IndentLevel(line)));
+                i++;
+                continue;
+            }
+
+            // Numbered item: "1. " or "1) ". Rendered as a bullet carrying the author's own number,
+            // which matters when a reply says "fix 3 first" about a list it just wrote.
+            int numberEnd = OrderedMarkerLength(trimmed);
+            if (numberEnd > 0)
+            {
+                FlushParagraph();
+                blocks.Add(new MarkdownBlock(MarkdownBlockKind.Bullet, trimmed.Substring(numberEnd).Trim(),
+                    marker: trimmed.Substring(0, numberEnd - 1), indent: IndentLevel(line)));
                 i++;
                 continue;
             }

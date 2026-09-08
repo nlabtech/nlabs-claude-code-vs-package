@@ -173,7 +173,10 @@ internal sealed class AgentPanelControl : UserControl
                 ["sttFailed"] = "The speech-to-text command failed.", ["sttEmpty"] = "Nothing was recognised.",
                 ["bypassMode"] = "Bypass permissions",
                 ["imageZoom"] = "Click to see it full size", ["imageTooMany"] = "Up to {0} images per message.",
-                ["agentProject"] = "This project", ["agentUser"] = "Yours",
+                ["agentProject"] = "This project", ["agentUser"] = "Yours", ["subagent"] = "Subagent",
+                ["latestOf"] = "{0} (latest)", ["usageTitle"] = "Subscription usage",
+                ["win5h"] = "Session (5 hours)", ["win7d"] = "Weekly (7 days)", ["win7dOpus"] = "Weekly (Opus)",
+                ["short5h"] = "5h", ["short7d"] = "7d", ["short7dOpus"] = "7d Opus", ["percent"] = "{0}%",
                 ["queued"] = "Queued - it will send when the current turn ends.",
                 ["cliMissing"] = "The Claude CLI was not found. Install it, or set its path in Tools > Options > Claude Code (nLabtech).",
                 ["cliStart"] = "The Claude CLI could not be started:", ["cliLost"] = "The session ended.",
@@ -241,7 +244,10 @@ internal sealed class AgentPanelControl : UserControl
                 ["sttFailed"] = "Konusma-yazi komutu basarisiz oldu.", ["sttEmpty"] = "Hicbir sey anlasilmadi.",
                 ["bypassMode"] = "Izinleri atla",
                 ["imageZoom"] = "Tam boyut icin tikla", ["imageTooMany"] = "Mesaj basina en fazla {0} gorsel.",
-                ["agentProject"] = "Bu proje", ["agentUser"] = "Senin",
+                ["agentProject"] = "Bu proje", ["agentUser"] = "Senin", ["subagent"] = "Alt ajan",
+                ["latestOf"] = "{0} (en guncel)", ["usageTitle"] = "Abonelik kullanimi",
+                ["win5h"] = "Oturum (5 saat)", ["win7d"] = "Haftalik (7 gun)", ["win7dOpus"] = "Haftalik (Opus)",
+                ["short5h"] = "5s", ["short7d"] = "7g", ["short7dOpus"] = "7g Opus", ["percent"] = "%{0}",
                 ["queued"] = "Sirada - bu tur bitince gonderilecek.",
                 ["cliMissing"] = "Claude CLI bulunamadi. Kur ya da yolunu Tools > Options > Claude Code (nLabtech) altinda ayarla.",
                 ["cliStart"] = "Claude CLI baslatilamadi:", ["cliLost"] = "Oturum sona erdi.",
@@ -294,9 +300,13 @@ internal sealed class AgentPanelControl : UserControl
     private bool _prefsLoaded; // suppresses saves while the constructor applies the stored choices
     private bool _modelCheckDone; // the model-staleness check runs once per panel
     private readonly VoiceRecorder _recorder = new VoiceRecorder();
+    private RateLimitStatus? _lastUsage; // the newest usage the CLI reported, for the detail card
     private string? _speechCommand;  // the transcriber found on this machine, if any
     private bool _speechProbed;      // looked for one already - the answer will not change
     private StackPanel? _emptyState; // the welcome block, shown only while the feed is empty
+    // Task call id -> the subagent it delegated to, so its later lines can be named.
+    private readonly System.Collections.Generic.Dictionary<string, string> _subagentByToolId =
+        new System.Collections.Generic.Dictionary<string, string>(StringComparer.Ordinal);
     private DateTime _lastEventAt;   // when the CLI last said anything, so a stall can be named
     private Border? _micButton;
     private List<string>? _pathCache;   // workspace paths for "@" completion, rebuilt on a timer
@@ -365,24 +375,33 @@ internal sealed class AgentPanelControl : UserControl
 
         // Tier aliases, not pinned versions - each resolves to the latest model of that tier, so the
         // list doesn't go stale as new releases land.
-        _modelCombo = MakeCombo(new (string, string?)[] { ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Fable", "fable") });
+        _modelCombo = MakeCombo("✦", new (string, string?)[]
+        {
+            ("Default model", null), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku"), ("Fable", "fable"),
+        });
         // The CLI's four permission modes, in order of how much they hand over. "Bypass" is last and
         // named plainly: it stops the panel asking at all, which is a decision, not a convenience.
-        _modeCombo = MakeCombo(new (string, string?)[]
+        _modeCombo = MakeCombo("⚡", new (string, string?)[]
         {
             ("Ask each time", null), ("Accept edits", "acceptEdits"), ("Plan mode", "plan"), ("Bypass permissions", "bypassPermissions"),
         });
-        _effortCombo = MakeCombo(new (string, string?)[]
+        _effortCombo = MakeCombo("◔", new (string, string?)[]
         {
             ("Effort: default", null), ("Low", "low"), ("Medium", "medium"), ("High", "high"), ("xHigh", "xhigh"), ("Max", "max"),
         });
         // Localize the wording of the fixed entries (model, level and mode names stay as-is).
-        Bind(() => ((ComboBoxItem)_modelCombo.Items[0]).Content = Loc("defaultModel"));
-        Bind(() => ((ComboBoxItem)_modeCombo.Items[0]).Content = Loc("askEach"));
-        Bind(() => ((ComboBoxItem)_modeCombo.Items[1]).Content = Loc("acceptEdits"));
-        Bind(() => ((ComboBoxItem)_modeCombo.Items[2]).Content = Loc("planMode"));
-        Bind(() => ((ComboBoxItem)_modeCombo.Items[3]).Content = Loc("bypassMode"));
-        Bind(() => ((ComboBoxItem)_effortCombo.Items[0]).Content = Loc("defaultEffort"));
+        // The tiers say "(latest)" because that is what an alias means: it follows the newest model of
+        // that tier, so a pinned version never quietly goes stale here.
+        Bind(() => SetComboItemLabel(_modelCombo, 0, Loc("defaultModel")));
+        Bind(() => SetComboItemLabel(_modelCombo, 1, string.Format(Loc("latestOf"), "Opus")));
+        Bind(() => SetComboItemLabel(_modelCombo, 2, string.Format(Loc("latestOf"), "Sonnet")));
+        Bind(() => SetComboItemLabel(_modelCombo, 3, string.Format(Loc("latestOf"), "Haiku")));
+        Bind(() => SetComboItemLabel(_modelCombo, 4, string.Format(Loc("latestOf"), "Fable")));
+        Bind(() => SetComboItemLabel(_modeCombo, 0, Loc("askEach")));
+        Bind(() => SetComboItemLabel(_modeCombo, 1, Loc("acceptEdits")));
+        Bind(() => SetComboItemLabel(_modeCombo, 2, Loc("planMode")));
+        Bind(() => SetComboItemLabel(_modeCombo, 3, Loc("bypassMode")));
+        Bind(() => SetComboItemLabel(_effortCombo, 0, Loc("defaultEffort")));
         _convCombo = new ComboBox
         {
             MinWidth = 150,
@@ -466,20 +485,17 @@ internal sealed class AgentPanelControl : UserControl
         // Build each section once - these add fields (input, status, combos) as children, so a second
         // call would try to re-parent the same element and throw.
         UIElement header = BuildHeader();
-        UIElement chatRow = BuildChatRow();
         // BuildComposer reads the current folder (a solution-service call) while wiring the status bar;
         // the tool window always builds on the UI thread, so this is safe.
 #pragma warning disable VSTHRD010
         UIElement composer = BuildComposer();
 #pragma warning restore VSTHRD010
         DockPanel.SetDock(header, Dock.Top);
-        DockPanel.SetDock(chatRow, Dock.Top);
         DockPanel.SetDock(_tasksBox, Dock.Top);
         DockPanel.SetDock(composer, Dock.Bottom);
 
         var root = new DockPanel { LastChildFill = true };
         root.Children.Add(header);
-        root.Children.Add(chatRow);
         root.Children.Add(_tasksBox);
         root.Children.Add(composer);
         root.Children.Add(_scroller);
@@ -546,21 +562,28 @@ internal sealed class AgentPanelControl : UserControl
         brand.Children.Add(title);
         brand.Children.Add(tag);
 
-        // Brand only. The selectors that used to sit up here moved down beside the chat switcher, so
-        // this reads as a title bar rather than the first row of a form.
+        // One row, not two: brand on the left, the chat switcher and preferences on the right. The
+        // right side is added first so a narrow dock trims the product name instead of the controls.
+        var row = new DockPanel { LastChildFill = false };
+        UIElement controls = BuildChatControls();
+        DockPanel.SetDock(controls, Dock.Right);
+        row.Children.Add(controls);
+        DockPanel.SetDock(brand, Dock.Left);
+        row.Children.Add(brand);
+
         var bar = new Border
         {
-            Padding = new Thickness(12, 7, 12, 7),
+            Padding = new Thickness(12, 6, 12, 6),
             BorderThickness = new Thickness(0, 0, 0, 1),
-            Child = brand,
+            Child = row,
         };
         bar.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
         return bar;
     }
 
-    // The conversation switcher plus New, Rename and Delete. Rename swaps a text box in over the
-    // switcher; Enter commits it, Escape or a click away cancels.
-    private UIElement BuildChatRow()
+    // The conversation switcher plus New, Rename and Delete, then the two preferences. Rename swaps a
+    // text box in over the switcher; Enter commits it, Escape or a click away cancels.
+    private UIElement BuildChatControls()
     {
         var chat = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         MakePill(_convCombo);
@@ -586,17 +609,11 @@ internal sealed class AgentPanelControl : UserControl
         chat.Children.Add(MakeIconButton("✎", "rename", BeginRename));
         chat.Children.Add(MakeIconButton("\U0001F5D1", "delete", DeleteConversation));
 
-        // Language and accent: preferences, so they sit at the far end, away from the chat controls.
-        var prefs = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        prefs.Children.Add(MakePill(_langCombo));
-        prefs.Children.Add(MakePill(_accentCombo));
-
-        var row = new DockPanel { LastChildFill = false, Margin = new Thickness(12, 6, 12, 0) };
-        DockPanel.SetDock(chat, Dock.Left);
-        DockPanel.SetDock(prefs, Dock.Right);
-        row.Children.Add(chat);
-        row.Children.Add(prefs);
-        return row;
+        // Language and accent: preferences rather than chat controls, so a gap sets them apart.
+        chat.Children.Add(new Border { Width = 12 });
+        chat.Children.Add(MakePill(_langCombo));
+        chat.Children.Add(MakePill(_accentCombo));
+        return chat;
     }
 
     // Shows the rename box seeded with the current title: the switcher and the box are siblings, so
@@ -722,7 +739,7 @@ internal sealed class AgentPanelControl : UserControl
 
         // The bottom status bar: quiet mini-buttons on the left (the working folder for now; more join
         // it as those features land), the status text and running cost on the right.
-        var folderButton = BuildStatusButton(PickFolder, out _folderLabel);
+        var folderButton = BuildStatusButton("📁", PickFolder, out _folderLabel);
         // The panel is built on the UI thread; the folder caption reads the solution service safely here.
 #pragma warning disable VSTHRD010
         Bind(() => _folderLabel!.Text = FolderCaption());
@@ -731,7 +748,7 @@ internal sealed class AgentPanelControl : UserControl
         // The undo control sits next to the folder; it stays hidden until a turn has a snapshot to revert.
         // UndoTurnAsync re-establishes the UI thread itself before any shell access.
 #pragma warning disable VSTHRD010
-        var undoButton = BuildStatusButton(() => _ = UndoTurnAsync(), out _undoLabel);
+        var undoButton = BuildStatusButton("↶", () => _ = UndoTurnAsync(), out _undoLabel);
 #pragma warning restore VSTHRD010
         undoButton.Visibility = Visibility.Collapsed;
         _undoButton = undoButton;
@@ -739,7 +756,7 @@ internal sealed class AgentPanelControl : UserControl
 
         // A one-click review of the working tree - sends a read-only "find issues" turn.
 #pragma warning disable VSTHRD010
-        Border reviewButton = BuildStatusButton(() => _ = SendReviewAsync(), out TextBlock reviewLabel);
+        Border reviewButton = BuildStatusButton("🔍", () => _ = SendReviewAsync(), out TextBlock reviewLabel);
 #pragma warning restore VSTHRD010
         Bind(() => reviewLabel.Text = Loc("review"));
 
@@ -764,8 +781,17 @@ internal sealed class AgentPanelControl : UserControl
 
         // Subscription usage (5h / 7d windows). Sits left of the bridge indicator; hidden until the
         // first rate_limit_event arrives.
-        _usageLabel = new TextBlock { FontSize = 11, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
+        _usageLabel = new TextBlock
+        {
+            FontSize = 11,
+            Opacity = 0.6,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 12, 0),
+            Cursor = Cursors.Hand,
+            Background = Brushes.Transparent,
+        };
         _usageLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        _usageLabel.MouseLeftButtonUp += (_, __) => ShowUsageCard(_usageLabel);
 
         var statusBar = new DockPanel { Margin = new Thickness(4, 7, 4, 0), LastChildFill = true };
         DockPanel.SetDock(leftStatus, Dock.Left);
@@ -977,6 +1003,11 @@ internal sealed class AgentPanelControl : UserControl
                 break;
 
             case CliEventKind.StreamDelta:
+                // A subagent's tokens are not part of the answer being written here; they belong to
+                // its own card, which is drawn when its turn completes. Folding them into this
+                // stream would splice another agent's sentences into the middle of the reply.
+                if (e.ParentToolUseId != null) break;
+
                 // Accumulate and mark dirty; the render timer repaints on its own cadence.
                 if (!string.IsNullOrEmpty(e.Text))
                 {
@@ -991,6 +1022,7 @@ internal sealed class AgentPanelControl : UserControl
                 break;
 
             case CliEventKind.Assistant:
+                string? parent = e.ParentToolUseId;
                 if (e.Tools != null)
                 {
                     // A tool step: close the text so far into its own bubble, then drop a chip per call.
@@ -999,15 +1031,34 @@ internal sealed class AgentPanelControl : UserControl
                     string? preface = e.Text;
                     OnUi(() =>
                     {
-                        if (!string.IsNullOrEmpty(preface)) _streamingText = preface!;
-                        FlushAssistantText();
-                        foreach (ToolCall call in tools) AddToolChip(call);
+                        RememberSubagents(tools);
+                        if (parent == null)
+                        {
+                            if (!string.IsNullOrEmpty(preface)) _streamingText = preface!;
+                            FlushAssistantText();
+                        }
+                        else if (!string.IsNullOrEmpty(preface))
+                        {
+                            AddSubagentCard(SubagentName(parent), preface!);
+                        }
+
+                        string? owner = parent == null ? null : SubagentName(parent);
+                        foreach (ToolCall call in tools) AddToolChip(call, owner);
                     });
                 }
                 else if (!string.IsNullOrEmpty(e.Text))
                 {
-                    _streamingText = e.Text!;
-                    _renderPending = true;
+                    if (parent == null)
+                    {
+                        _streamingText = e.Text!;
+                        _renderPending = true;
+                    }
+                    else
+                    {
+                        string delegated = e.Text!;
+                        string who = SubagentName(parent);
+                        OnUi(() => AddSubagentCard(who, delegated));
+                    }
                 }
                 break;
 
@@ -1135,23 +1186,91 @@ internal sealed class AgentPanelControl : UserControl
         _streamingText = string.Empty;
     }
 
-    // One tool call as a compact chip in the feed: an accent dot, the tool name, and a muted summary.
-    private void AddToolChip(ToolCall call)
+    // One tool call as an outlined chip in the feed: a marker, the tool name, and a muted summary.
+    // Outlined rather than a bare line because a turn produces a run of these, and without an edge
+    // they read as one paragraph of noise instead of a list of discrete steps.
+    private void AddToolChip(ToolCall call, string? owner)
     {
-        var line = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(14, 3, 8, 3) };
-        line.Inlines.Add(new Run("●  ") { Foreground = Accent }); // leading dot
+        var line = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 11 };
+        line.Inlines.Add(new Run(owner == null ? "●  " : "└  ") { Foreground = Accent });
+        if (owner != null)
+        {
+            line.Inlines.Add(new Run(owner + ": ") { Foreground = Accent, FontWeight = FontWeights.SemiBold });
+        }
         line.Inlines.Add(new Run(call.Name) { FontWeight = FontWeights.SemiBold });
         if (!string.IsNullOrEmpty(call.Summary))
         {
-            var detail = new Run("  " + ExtensionOptions.ForDisplay(call.Summary)) { FontFamily = MonoFont };
-            line.Inlines.Add(detail);
+            line.Inlines.Add(new Run("  -  " + ExtensionOptions.ForDisplay(call.Summary)) { FontFamily = MonoFont });
         }
         line.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-        line.Opacity = 0.85;
+
+        var chip = new Border
+        {
+            Child = line,
+            Background = CardFill,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(9, 4, 9, 4),
+            Margin = new Thickness(14, 2, 8, 2),
+        };
+        chip.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+
         HideEmptyState();
-        _messages.Children.Add(line);
+        _messages.Children.Add(chip);
         ScrollToEndIfAtBottom();
     }
+
+    // What a delegated turn produced, kept in its own card so it never reads as the main answer. The
+    // caption names the subagent: "some agent said this" and "Claude said this" are different claims.
+    private void AddSubagentCard(string name, string text)
+    {
+        var caption = new TextBlock
+        {
+            Text = Loc("subagent") + " - " + name,
+            FontSize = 10,
+            Opacity = 0.55,
+            Margin = new Thickness(0, 0, 0, 5),
+        };
+        caption.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var body = new StackPanel();
+        RenderMarkdownInto(body, text);
+
+        var stack = new StackPanel();
+        stack.Children.Add(caption);
+        stack.Children.Add(body);
+
+        var card = new Border
+        {
+            Child = stack,
+            Background = CardFill,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 8, 10, 8),
+            Margin = new Thickness(24, 4, 8, 4), // indented: it sits under the call that asked for it
+        };
+        card.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+
+        HideEmptyState();
+        _messages.Children.Add(card);
+        ScrollToEndIfAtBottom();
+    }
+
+    // Remembers which subagent a Task call handed work to, so the lines the CLI later reports under
+    // that call can be attributed to it by name.
+    private void RememberSubagents(System.Collections.Generic.IReadOnlyList<ToolCall> tools)
+    {
+        foreach (ToolCall call in tools)
+        {
+            if (!string.IsNullOrEmpty(call.Id) && !string.IsNullOrEmpty(call.Subagent))
+            {
+                _subagentByToolId[call.Id] = call.Subagent!;
+            }
+        }
+    }
+
+    private string SubagentName(string toolUseId) =>
+        _subagentByToolId.TryGetValue(toolUseId, out string name) ? name : Loc("subagent");
 
     // A completed assistant message restored from history: rendered and given a Copy action at once.
     private void AddStoredAssistant(string text)
@@ -1174,7 +1293,9 @@ internal sealed class AgentPanelControl : UserControl
             column.Children.Add(new Border
             {
                 Child = content,
-                Background = UserFill,
+                // A neutral card, not an accent wash: several prompts in a row all tinted with the
+                // brand colour turned the transcript into a stack of banners. The stripe is enough.
+                Background = CardFill,
                 BorderBrush = Accent,
                 BorderThickness = new Thickness(2, 0, 0, 0),
                 CornerRadius = new CornerRadius(0, 6, 6, 0),
@@ -1270,7 +1391,7 @@ internal sealed class AgentPanelControl : UserControl
                         fontSize: 15 + Math.Max(0, 3 - block.HeadingLevel), topGap: 6));
                     break;
                 case MarkdownBlockKind.Bullet:
-                    container.Children.Add(BuildBullet(block.Text));
+                    container.Children.Add(BuildBullet(block));
                     break;
                 default:
                     container.Children.Add(BuildInlineText(block.Text, bold: false, fontSize: 0, topGap: 3));
@@ -1391,16 +1512,25 @@ internal sealed class AgentPanelControl : UserControl
 
     // A bullet is a two-column row rather than a horizontal stack: the text column has to be given a
     // finite width, or the selectable body below would lay out unwrapped.
-    private UIElement BuildBullet(string text)
+    private UIElement BuildBullet(MarkdownBlock block)
     {
-        var row = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        var row = new Grid { Margin = new Thickness(block.Indent * 16, 2, 0, 2) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        var dot = new TextBlock { Text = "•  ", Foreground = Accent, FontWeight = FontWeights.Bold };
-        row.Children.Add(dot);
+        // A number needs a wider, right-aligned gutter than a dot, so "9." and "10." still line up.
+        bool numbered = block.Marker.Length > 0 && block.Marker[0] >= '0' && block.Marker[0] <= '9';
+        var marker = new TextBlock
+        {
+            Text = (block.Marker.Length == 0 ? "•" : block.Marker) + "  ",
+            Foreground = Accent,
+            FontWeight = FontWeights.SemiBold,
+            MinWidth = numbered ? 26 : 0,
+            TextAlignment = numbered ? TextAlignment.Right : TextAlignment.Left,
+        };
+        row.Children.Add(marker);
 
-        var body = (FrameworkElement)BuildInlineText(text, bold: false, fontSize: 0, topGap: 0);
+        var body = (FrameworkElement)BuildInlineText(block.Text, bold: false, fontSize: 0, topGap: 0);
         Grid.SetColumn(body, 1);
         row.Children.Add(body);
         return row;
@@ -1430,7 +1560,9 @@ internal sealed class AgentPanelControl : UserControl
                     paragraph.Inlines.Add(new Run(run.Text) { FontWeight = FontWeights.Bold });
                     break;
                 case MarkdownInlineKind.Code:
-                    paragraph.Inlines.Add(new Run(run.Text) { FontFamily = MonoFont });
+                    // Accent, not just monospace: a file name or a flag mentioned mid-sentence is the
+                    // part being pointed at, and in a wall of prose the font alone does not carry it.
+                    paragraph.Inlines.Add(new Run(run.Text) { FontFamily = MonoFont, Foreground = Accent });
                     break;
                 default:
                     paragraph.Inlines.Add(new Run(run.Text));
@@ -2176,22 +2308,54 @@ internal sealed class AgentPanelControl : UserControl
         }
     }
 
-    private ComboBox MakeCombo((string label, string? value)[] options)
+    private ComboBox MakeCombo(string glyph, (string label, string? value)[] options)
     {
-        var combo = new ComboBox
-        {
-            MinWidth = 118,
-            FontSize = 12,
-            Margin = new Thickness(0, 0, 12, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        var combo = new ComboBox { VerticalAlignment = VerticalAlignment.Center };
         foreach (var (label, value) in options)
         {
-            combo.Items.Add(new ComboBoxItem { Content = label, Tag = value });
+            combo.Items.Add(MakeComboItem(glyph, label, value));
         }
         combo.SelectedIndex = 0;
         MakePill(combo);
         return combo;
+    }
+
+    // One row of a selector: the glyph in the accent colour, then the label. The glyph stays visible
+    // in the closed pill too - in a narrow dock the label is the first thing to be trimmed away, and
+    // the icon is then all that says which selector this is.
+    private ComboBoxItem MakeComboItem(string glyph, string label, string? value)
+    {
+        var icon = new TextBlock
+        {
+            Text = glyph,
+            FontSize = 11,
+            Foreground = Accent,
+            Margin = new Thickness(0, 0, 6, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var text = new TextBlock
+        {
+            Text = label,
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(icon);
+        row.Children.Add(text);
+        return new ComboBoxItem { Content = row, Tag = value };
+    }
+
+    // Re-labels one selector row when the language changes, leaving its glyph and value alone.
+    private static void SetComboItemLabel(ComboBox combo, int index, string label)
+    {
+        if (index < 0 || index >= combo.Items.Count) return;
+        if (combo.Items[index] is ComboBoxItem item && item.Content is StackPanel row &&
+            row.Children.Count > 1 && row.Children[1] is TextBlock text)
+        {
+            text.Text = label;
+        }
     }
 
     // A selector sized as a pill rather than a form field: small, and free to shrink. The width is
@@ -2294,19 +2458,36 @@ internal sealed class AgentPanelControl : UserControl
 
     // A quiet status-bar button: muted text that brightens on hover. The label is returned so the
     // caller can keep its text current (the folder name, a status, a count).
-    private Border BuildStatusButton(Action onClick, out TextBlock label)
+    // A status-bar action: a glyph in the accent colour and a quiet label. The glyph is what makes a
+    // row of these scannable - four words in the same weight and size are not.
+    private Border BuildStatusButton(string glyph, Action onClick, out TextBlock label)
     {
-        label = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.65 };
-        label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-        var button = new Border
+        var icon = new TextBlock
         {
-            Child = label,
-            Cursor = Cursors.Hand,
-            Padding = new Thickness(0, 0, 10, 0),
+            Text = glyph,
+            FontSize = 10,
+            Foreground = Accent,
+            Margin = new Thickness(0, 0, 4, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        button.MouseEnter += (_, __) => button.Opacity = 0.55;
-        button.MouseLeave += (_, __) => button.Opacity = 1.0;
+        label = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.65 };
+        label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        row.Children.Add(icon);
+        row.Children.Add(label);
+
+        var button = new Border
+        {
+            Child = row,
+            Background = Brushes.Transparent,
+            Cursor = Cursors.Hand,
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(4, 1, 6, 1),
+            Margin = new Thickness(0, 0, 4, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        HoverTint(button);
         button.MouseLeftButtonUp += (_, __) => onClick();
         return button;
     }
@@ -2428,23 +2609,104 @@ internal sealed class AgentPanelControl : UserControl
             _usageLabel.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
             _usageLabel.Opacity = 0.6;
         }
-        _usageLabel.ToolTip = BuildUsageTooltip(usage);
+        _lastUsage = usage;
+        _usageLabel.ToolTip = null; // the detail is a card now, opened by clicking the figure
     }
 
-    // The full picture behind the one-line summary: every window the CLI reported, how full it is and
-    // how long until it resets. A percentage alone does not answer "can I keep going this evening".
-    private string BuildUsageTooltip(RateLimitStatus usage)
+    // The full picture behind the one-line summary: a bar per window, how full it is and how long
+    // until it resets. A percentage alone does not answer "can I keep going this evening", and a bar
+    // answers it without being read.
+    private void ShowUsageCard(UIElement anchor)
     {
-        var lines = new System.Collections.Generic.List<string>();
-        foreach (RateLimitWindow w in usage.Windows)
+        if (_lastUsage == null) return;
+
+        var stack = new StackPanel { MinWidth = 260 };
+        var title = new TextBlock
         {
-            string line = ShortWindow(w.Name) + "  " + (int)Math.Round(w.Utilization * 100) + "%";
-            if (w.ResetsAt != null) line += "  ·  " + Loc("resetsIn") + " " + Remaining(w.ResetsAt.Value);
-            lines.Add(line);
+            Text = Loc("usageTitle"),
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+        title.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        stack.Children.Add(title);
+
+        foreach (RateLimitWindow w in _lastUsage.Windows) stack.Children.Add(BuildUsageBar(w));
+
+        if (_lastUsage.Warning)
+        {
+            var warn = new TextBlock { Text = Loc("limitNear"), FontSize = 10.5, Foreground = Accent, Margin = new Thickness(0, 4, 0, 0) };
+            stack.Children.Add(warn);
         }
 
-        if (usage.Warning) lines.Add(Loc("limitNear"));
-        return lines.Count == 0 ? Loc("limitUnknown") : string.Join(Environment.NewLine, lines);
+        var card = new Border
+        {
+            Child = stack,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12, 10, 12, 10),
+        };
+        card.SetResourceReference(Border.BackgroundProperty, VsBrushes.ToolWindowBackgroundKey);
+        card.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+
+        var popup = new Popup
+        {
+            PlacementTarget = anchor,
+            Placement = PlacementMode.Top,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = card,
+        };
+        popup.IsOpen = true;
+    }
+
+    // One window: its name, its percentage, a filled bar, and when it resets.
+    private UIElement BuildUsageBar(RateLimitWindow window)
+    {
+        var head = new DockPanel { Margin = new Thickness(0, 0, 0, 3) };
+        var name = new TextBlock { Text = WindowName(window.Name), FontSize = 11 };
+        name.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        var percent = new TextBlock
+        {
+            Text = string.Format(Loc("percent"), (int)Math.Round(window.Utilization * 100)),
+            FontSize = 11,
+            Opacity = 0.7,
+        };
+        percent.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        DockPanel.SetDock(percent, Dock.Right);
+        head.Children.Add(percent);
+        head.Children.Add(name);
+
+        // The fill is a column in a two-column grid, so it tracks the card's width without any
+        // arithmetic on actual pixels - which would be wrong the moment the panel is resized.
+        var track = new Grid { Height = 5 };
+        track.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(0.0001, window.Utilization), GridUnitType.Star) });
+        track.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(0.0001, 1 - window.Utilization), GridUnitType.Star) });
+
+        var fill = new Border { Background = Accent, CornerRadius = new CornerRadius(3) };
+        var rest = new Border { Background = CardFill, CornerRadius = new CornerRadius(3) };
+        Grid.SetColumn(rest, 1);
+        track.Children.Add(fill);
+        track.Children.Add(rest);
+
+        var block = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+        block.Children.Add(head);
+        block.Children.Add(track);
+
+        if (window.ResetsAt != null)
+        {
+            var reset = new TextBlock
+            {
+                Text = Loc("resetsIn") + " " + Remaining(window.ResetsAt.Value),
+                FontSize = 10,
+                Opacity = 0.5,
+                Margin = new Thickness(0, 3, 0, 0),
+            };
+            reset.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            block.Children.Add(reset);
+        }
+
+        return block;
     }
 
     // "3h 12m" - coarse on purpose, because the exact second is never the question being asked.
@@ -2458,24 +2720,37 @@ internal sealed class AgentPanelControl : UserControl
     }
 
     // A compact usage line: the windows the CLI reported, each as a short name and a percentage.
-    private static string FormatUsage(RateLimitStatus usage)
+    private string FormatUsage(RateLimitStatus usage)
     {
         var parts = new System.Collections.Generic.List<string>();
         foreach (RateLimitWindow w in usage.Windows)
         {
-            parts.Add(ShortWindow(w.Name) + " " + (int)Math.Round(w.Utilization * 100) + "%");
+            parts.Add(ShortWindow(w.Name) + " " + string.Format(Loc("percent"), (int)Math.Round(w.Utilization * 100)));
             if (parts.Count >= 3) break;
         }
         return string.Join("  ·  ", parts);
     }
 
-    private static string ShortWindow(string name)
+    // The CLI's window keys, in the reader's language. An unknown key is shown as it came: better a
+    // raw name than silently dropping a limit the developer is actually being measured against.
+    private string ShortWindow(string name)
     {
         switch (name)
         {
-            case "five_hour": return "5h";
-            case "seven_day": return "7d";
-            case "seven_day_opus": return "7d Opus";
+            case "five_hour": return Loc("short5h");
+            case "seven_day": return Loc("short7d");
+            case "seven_day_opus": return Loc("short7dOpus");
+            default: return name;
+        }
+    }
+
+    private string WindowName(string name)
+    {
+        switch (name)
+        {
+            case "five_hour": return Loc("win5h");
+            case "seven_day": return Loc("win7d");
+            case "seven_day_opus": return Loc("win7dOpus");
             default: return name;
         }
     }

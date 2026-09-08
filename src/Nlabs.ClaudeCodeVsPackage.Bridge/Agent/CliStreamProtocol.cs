@@ -41,8 +41,13 @@ public sealed class ImageAttachment
 /// <summary>A tool the agent invoked this turn: its name and a one-line summary of the call.</summary>
 public sealed class ToolCall
 {
+    /// <summary>The CLI's id for this call; later lines reference it as their parent.</summary>
+    public string Id { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Summary { get; set; } = string.Empty;
+
+    /// <summary>For a Task call, the subagent it delegates to; null for every other tool.</summary>
+    public string? Subagent { get; set; }
 }
 
 /// <summary>One subscription usage window (5-hour, 7-day, ...) and how full it is.</summary>
@@ -110,6 +115,13 @@ public sealed class CliEvent
 
     /// <summary>Subscription usage when this line was a rate_limit_event; null otherwise.</summary>
     public RateLimitStatus? RateLimit { get; set; }
+
+    /// <summary>
+    /// The Task call this line belongs to, when it came from a subagent rather than the main turn.
+    /// Null for the main turn - which is what lets the panel keep a delegated turn's work visibly
+    /// separate instead of interleaving it with the answer the developer asked for.
+    /// </summary>
+    public string? ParentToolUseId { get; set; }
 }
 
 /// <summary>
@@ -202,6 +214,7 @@ public static class CliStreamProtocol
                     Todos = ExtractTodos(assistantContent),
                     Tools = ExtractTools(assistantContent),
                     SessionId = (string?)obj["session_id"],
+                    ParentToolUseId = (string?)obj["parent_tool_use_id"],
                     Raw = line,
                 };
 
@@ -214,6 +227,7 @@ public static class CliStreamProtocol
                     Kind = CliEventKind.StreamDelta,
                     Text = DeltaText(obj["event"]),
                     OutputTokens = (int?)obj["event"]?["usage"]?["output_tokens"],
+                    ParentToolUseId = (string?)obj["parent_tool_use_id"],
                     Raw = line,
                 };
 
@@ -277,7 +291,12 @@ public static class CliStreamProtocol
             if (name == "TodoWrite") continue;
             (list ??= new System.Collections.Generic.List<ToolCall>()).Add(new ToolCall
             {
+                Id = (string?)block["id"] ?? string.Empty,
                 Name = name,
+                // A Task call names the subagent it is handing work to. Everything the CLI reports
+                // under this call's id afterwards belongs to that subagent, which is how the panel
+                // can say whose work it is showing rather than blurring it into the main turn.
+                Subagent = name == "Task" ? (string?)block["input"]?["subagent_type"] : null,
                 Summary = SummariseToolInput(name, block["input"]),
             });
         }

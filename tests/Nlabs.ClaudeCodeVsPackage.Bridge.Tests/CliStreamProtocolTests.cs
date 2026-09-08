@@ -66,6 +66,44 @@ public class CliStreamProtocolTests
     }
 
     [Fact]
+    public void A_Task_call_names_the_subagent_it_delegates_to()
+    {
+        var line = "{\"type\":\"assistant\",\"message\":{\"content\":[" +
+                   "{\"type\":\"tool_use\",\"id\":\"toolu_9\",\"name\":\"Task\"," +
+                   "\"input\":{\"subagent_type\":\"memory-curator\",\"description\":\"save it\"}}]}}";
+
+        var e = CliStreamProtocol.Parse(line);
+
+        Assert.Equal("toolu_9", e.Tools![0].Id);
+        Assert.Equal("memory-curator", e.Tools[0].Subagent);
+    }
+
+    [Fact]
+    public void An_ordinary_tool_call_delegates_to_no_one()
+    {
+        var line = "{\"type\":\"assistant\",\"message\":{\"content\":[" +
+                   "{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"file_path\":\"a.cs\"}}]}}";
+
+        Assert.Null(CliStreamProtocol.Parse(line).Tools![0].Subagent);
+    }
+
+    [Fact]
+    public void Lines_from_a_subagent_carry_the_call_they_belong_to()
+    {
+        var assistant = CliStreamProtocol.Parse(
+            "{\"type\":\"assistant\",\"parent_tool_use_id\":\"toolu_9\"," +
+            "\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}");
+        var delta = CliStreamProtocol.Parse(
+            "{\"type\":\"stream_event\",\"parent_tool_use_id\":\"toolu_9\",\"event\":{}}");
+        var main = CliStreamProtocol.Parse(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}");
+
+        Assert.Equal("toolu_9", assistant.ParentToolUseId);
+        Assert.Equal("toolu_9", delta.ParentToolUseId);
+        Assert.Null(main.ParentToolUseId); // the main turn belongs to no call
+    }
+
+    [Fact]
     public void Assistant_with_only_text_has_no_tools()
     {
         var e = CliStreamProtocol.Parse("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}");

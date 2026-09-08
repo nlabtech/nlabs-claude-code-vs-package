@@ -23,6 +23,30 @@ public class MarkdownDocumentTests
     }
 
     [Fact]
+    public void Parse_reads_a_numbered_list_and_keeps_the_authors_numbers()
+    {
+        var blocks = MarkdownDocument.Parse("5. five\n6) six\nnot a list 7. here").ToList();
+
+        Assert.Equal(MarkdownBlockKind.Bullet, blocks[0].Kind);
+        Assert.Equal("five", blocks[0].Text);
+        Assert.Equal("5.", blocks[0].Marker);
+        Assert.Equal("six", blocks[1].Text);
+        Assert.Equal("6)", blocks[1].Marker);
+        Assert.Equal(MarkdownBlockKind.Paragraph, blocks[2].Kind);
+    }
+
+    [Fact]
+    public void Parse_records_how_deeply_a_list_item_is_nested()
+    {
+        var blocks = MarkdownDocument.Parse("- top\n  - nested\n    - deeper").ToList();
+
+        Assert.Equal(0, blocks[0].Indent);
+        Assert.Equal(1, blocks[1].Indent);
+        Assert.Equal(2, blocks[2].Indent);
+        Assert.All(blocks, b => Assert.Equal("•", b.Marker));
+    }
+
+    [Fact]
     public void Parse_reads_a_fenced_code_block_with_a_language()
     {
         var blocks = MarkdownDocument.Parse("do this:\n\n```csharp\nvar x = 1;\nreturn x;\n```\n\ndone").ToList();
