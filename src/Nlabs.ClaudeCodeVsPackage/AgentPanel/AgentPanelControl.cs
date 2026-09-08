@@ -159,6 +159,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["send"] = "Send", ["stop"] = "Stop", ["you"] = "You", ["assistant"] = "Claude",
                 ["defaultModel"] = "Default model", ["askEach"] = "Ask each time", ["acceptEdits"] = "Accept edits", ["planMode"] = "Plan mode",
                 ["hello"] = "Type a message and press Enter.", ["working"] = "Claude is working...",
+                ["thinking"] = "Thinking...", ["thoughtFor"] = "Thought for {0}s",
                 ["newChat"] = "New chat - type a message to begin.",
                 ["switched"] = "Switched - your next message resumes this chat.", ["tasks"] = "Tasks",
                 ["copy"] = "Copy", ["copied"] = "Copied", ["session"] = "session",
@@ -232,6 +233,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["send"] = "Gonder", ["stop"] = "Durdur", ["you"] = "Sen", ["assistant"] = "Claude",
                 ["defaultModel"] = "Varsayilan model", ["askEach"] = "Her seferinde sor", ["acceptEdits"] = "Duzenlemeleri kabul et", ["planMode"] = "Plan modu",
                 ["hello"] = "Bir mesaj yaz, Enter'a bas.", ["working"] = "Claude calisiyor...",
+                ["thinking"] = "Dusunuyor...", ["thoughtFor"] = "{0} sn dusundu",
                 ["newChat"] = "Yeni sohbet - baslamak icin bir mesaj yaz.",
                 ["switched"] = "Gecildi - sonraki mesajin bu sohbeti surdurur.", ["tasks"] = "Gorevler",
                 ["copy"] = "Kopyala", ["copied"] = "Kopyalandi", ["session"] = "oturum",
@@ -329,6 +331,12 @@ internal sealed class AgentPanelControl : UserControl
     private readonly VoiceRecorder _recorder = new VoiceRecorder();
     private RateLimitStatus? _lastUsage; // the newest usage the CLI reported, for the detail card
     private Grid? _scrim;            // the dimmed layer a confirmation is drawn on
+    private string _thinkingText = string.Empty;
+    private Border? _thinkingBox;
+    private TextBlock? _thinkingBody;
+    private TextBlock? _thinkingCaption;
+    private ScrollViewer? _thinkingScroller;
+    private DateTime _thinkingStart;
     private string? _speechCommand;  // the transcriber found on this machine, if any
     private bool _speechProbed;      // looked for one already - the answer will not change
     private StackPanel? _emptyState; // the welcome block, shown only while the feed is empty
@@ -506,6 +514,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             if (!_renderPending) return;
             _renderPending = false;
+            RenderThinking();
             RenderStreaming();
             ScrollToEndIfAtBottom();
         };
@@ -974,6 +983,7 @@ internal sealed class AgentPanelControl : UserControl
             _streamingContainer = null;
             _streamingColumn = null;
             _streamingTextBlock = null;
+            ResetThinking();
             _renderPending = false;
             _renderTimer.Start();
             SetBusy(true);
@@ -1058,6 +1068,12 @@ internal sealed class AgentPanelControl : UserControl
                 // stream would splice another agent's sentences into the middle of the reply.
                 if (e.ParentToolUseId != null) break;
 
+                if (!string.IsNullOrEmpty(e.Thinking))
+                {
+                    _thinkingText += e.Thinking;
+                    _renderPending = true;
+                }
+
                 // Accumulate and mark dirty; the render timer repaints on its own cadence.
                 if (!string.IsNullOrEmpty(e.Text))
                 {
@@ -1079,11 +1095,15 @@ internal sealed class AgentPanelControl : UserControl
                     // Prefer the message's own text (authoritative) in case a delta lagged behind.
                     var tools = e.Tools;
                     string? preface = e.Text;
+                    string? reasoning = e.Thinking;
                     OnUi(() =>
                     {
                         RememberSubagents(tools);
                         if (parent == null)
                         {
+                            // The message's own blocks are authoritative; prefer them over what the
+                            // deltas accumulated, which can lag or be cut short.
+                            if (!string.IsNullOrEmpty(reasoning)) _thinkingText = reasoning!;
                             if (!string.IsNullOrEmpty(preface)) _streamingText = preface!;
                             FlushAssistantText();
                         }
@@ -1211,6 +1231,94 @@ internal sealed class AgentPanelControl : UserControl
         return container;
     }
 
+    // Claude's reasoning, while it is being produced: dim, and capped in height so a long chain of
+    // thought scrolls inside its own box instead of pushing the conversation off the screen. It is
+    // shown at all because a turn that thinks for a minute with nothing on screen looks hung.
+    private void RenderThinking()
+    {
+        if (_thinkingText.Length == 0) return;
+
+        if (_thinkingBody == null)
+        {
+            _thinkingStart = DateTime.UtcNow;
+
+            _thinkingCaption = new TextBlock
+            {
+                Text = Loc("thinking"),
+                FontSize = 10.5,
+                Opacity = 0.55,
+                Cursor = Cursors.Hand,
+                Background = Brushes.Transparent,
+                Margin = new Thickness(0, 0, 0, 4),
+            };
+            _thinkingCaption.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+            _thinkingBody = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 11, Opacity = 0.5 };
+            _thinkingBody.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+
+            var scroller = new ScrollViewer
+            {
+                Content = _thinkingBody,
+                MaxHeight = 120,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            };
+
+            var stack = new StackPanel();
+            stack.Children.Add(_thinkingCaption);
+            stack.Children.Add(scroller);
+
+            // Once it has finished, the reasoning collapses to its caption - it is reference material,
+            // not the answer, and it should not sit between the question and the reply.
+            _thinkingCaption.MouseLeftButtonUp += (_, __) =>
+                scroller.Visibility = scroller.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+
+            _thinkingBox = new Border
+            {
+                Child = stack,
+                Background = CardFill,
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 7, 10, 7),
+                Margin = new Thickness(14, 4, 8, 4),
+            };
+            _thinkingScroller = scroller;
+
+            HideEmptyState();
+            _messages.Children.Add(_thinkingBox);
+        }
+
+        _thinkingBody.Text = ExtensionOptions.ForDisplay(_thinkingText);
+        _thinkingScroller?.ScrollToEnd();
+    }
+
+    // Closes the reasoning block: it stops being live, says how long it took, and folds away.
+    private void FinishThinking()
+    {
+        // Paint whatever arrived since the last tick, so the final words are not lost to the timer.
+        if (_thinkingText.Length > 0) RenderThinking();
+        if (_thinkingBox == null) return;
+
+        if (_thinkingCaption != null)
+        {
+            int seconds = Math.Max(1, (int)(DateTime.UtcNow - _thinkingStart).TotalSeconds);
+            _thinkingCaption.Text = string.Format(Loc("thoughtFor"), seconds);
+        }
+        if (_thinkingScroller != null) _thinkingScroller.Visibility = Visibility.Collapsed;
+
+        ResetThinking();
+    }
+
+    // Drops the reasoning state without touching what is already drawn - used when a turn is
+    // abandoned (Stop, New, a chat switch) rather than finished.
+    private void ResetThinking()
+    {
+        _thinkingBox = null;
+        _thinkingBody = null;
+        _thinkingCaption = null;
+        _thinkingScroller = null;
+        _thinkingText = string.Empty;
+    }
+
     // Opens a fresh reply bubble on demand - the turn doesn't create one up front, so a turn that
     // starts with a tool call shows the chip first and text lands in a bubble opened after it.
     private void EnsureStreamingBubble()
@@ -1223,6 +1331,7 @@ internal sealed class AgentPanelControl : UserControl
     private void FlushAssistantText()
     {
         _renderPending = false;
+        FinishThinking(); // the reasoning belongs to the step that just ended, not the next one
         if (_streamingTextBlock != null && _streamingText.Length > 0)
         {
             if (_streamingContainer != null) RenderMarkdownInto(_streamingContainer, _streamingText);
@@ -1233,6 +1342,7 @@ internal sealed class AgentPanelControl : UserControl
         _streamingContainer = null;
         _streamingColumn = null;
         _streamingTextBlock = null;
+        ResetThinking();
         _streamingText = string.Empty;
     }
 
@@ -1727,6 +1837,7 @@ internal sealed class AgentPanelControl : UserControl
         _streamingContainer = null;
         _streamingColumn = null;
         _streamingTextBlock = null;
+        ResetThinking();
         SetBusy(false);
         _status.Text = Loc("stopped");
     }
@@ -1936,6 +2047,7 @@ internal sealed class AgentPanelControl : UserControl
         _streamingContainer = null;
         _streamingColumn = null;
         _streamingTextBlock = null;
+        ResetThinking();
 
         _current = c;
         _switching = true;
@@ -3555,6 +3667,7 @@ internal sealed class AgentPanelControl : UserControl
         _streamingContainer = null;
         _streamingColumn = null;
         _streamingTextBlock = null;
+        ResetThinking();
 
         _current.Messages.Clear();
         _current.CliSessionId = null;

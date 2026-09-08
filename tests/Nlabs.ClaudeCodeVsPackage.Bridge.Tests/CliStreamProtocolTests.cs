@@ -66,6 +66,36 @@ public class CliStreamProtocolTests
     }
 
     [Fact]
+    public void Reasoning_arrives_on_its_own_channel_and_never_as_reply_text()
+    {
+        var delta = CliStreamProtocol.Parse(
+            "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\"," +
+            "\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"90 is not prime\"}}}");
+
+        Assert.Equal("90 is not prime", delta.Thinking);
+        Assert.Null(delta.Text); // it must not leak into the answer
+    }
+
+    [Fact]
+    public void An_assistant_message_reports_its_reasoning_apart_from_its_text()
+    {
+        var e = CliStreamProtocol.Parse(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[" +
+            "{\"type\":\"thinking\",\"thinking\":\"working it out\",\"signature\":\"x\"}," +
+            "{\"type\":\"text\",\"text\":\"97\"}]}}");
+
+        Assert.Equal("working it out", e.Thinking);
+        Assert.Equal("97", e.Text);
+    }
+
+    [Fact]
+    public void A_message_without_reasoning_reports_none()
+    {
+        var e = CliStreamProtocol.Parse("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}");
+        Assert.Null(e.Thinking);
+    }
+
+    [Fact]
     public void A_Task_call_names_the_subagent_it_delegates_to()
     {
         var line = "{\"type\":\"assistant\",\"message\":{\"content\":[" +

@@ -98,6 +98,14 @@ public sealed class CliEvent
 {
     public CliEventKind Kind { get; set; }
     public string? Text { get; set; }
+
+    /// <summary>
+    /// Claude's reasoning, when the effort setting produced any. Kept apart from <see cref="Text"/>
+    /// because it is not the answer: it is how the answer was reached, and showing the two as one
+    /// paragraph would put working-out into a reply the developer is meant to act on.
+    /// </summary>
+    public string? Thinking { get; set; }
+
     public string? SessionId { get; set; }
     public string? Model { get; set; }
     public double? TotalCostUsd { get; set; }
@@ -211,6 +219,7 @@ public static class CliStreamProtocol
                 {
                     Kind = CliEventKind.Assistant,
                     Text = JoinTextBlocks(assistantContent),
+                    Thinking = JoinThinkingBlocks(assistantContent),
                     Todos = ExtractTodos(assistantContent),
                     Tools = ExtractTools(assistantContent),
                     SessionId = (string?)obj["session_id"],
@@ -226,6 +235,7 @@ public static class CliStreamProtocol
                 {
                     Kind = CliEventKind.StreamDelta,
                     Text = DeltaText(obj["event"]),
+                    Thinking = DeltaThinking(obj["event"]),
                     OutputTokens = (int?)obj["event"]?["usage"]?["output_tokens"],
                     ParentToolUseId = (string?)obj["parent_tool_use_id"],
                     Raw = line,
@@ -406,5 +416,28 @@ public static class CliStreamProtocol
     {
         if (evt == null) return null;
         return (string?)evt["delta"]?["text"];
+    }
+
+    // Reasoning arrives on its own channel: a thinking_delta puts it at event.delta.thinking, never
+    // at .text. Reading only .text is why it used to vanish - correctly kept out of the reply, but
+    // then thrown away instead of shown as what it is.
+    private static string? DeltaThinking(JToken? evt)
+    {
+        if (evt == null) return null;
+        return (string?)evt["delta"]?["thinking"];
+    }
+
+    // The completed reasoning blocks of an assistant message, which arrive after their deltas and
+    // are authoritative.
+    private static string? JoinThinkingBlocks(JArray? content)
+    {
+        if (content == null) return null;
+        StringBuilder? sb = null;
+        foreach (var block in content)
+        {
+            if ((string?)block["type"] != "thinking") continue;
+            (sb ??= new StringBuilder()).Append((string?)block["thinking"]);
+        }
+        return sb?.ToString();
     }
 }
