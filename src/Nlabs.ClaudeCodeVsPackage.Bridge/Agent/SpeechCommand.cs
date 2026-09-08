@@ -27,35 +27,114 @@ public static class SpeechCommand
     /// runs only if the developer already has Python and faster-whisper, and it is plain text they
     /// can read, edit or delete. Transcription stays local; no audio leaves the machine.
     /// </summary>
-    public const string LocalScript = @"""""""Transcribe one audio file with faster-whisper and print the text.
+    public const string LocalScript = @"""""""Transcribe audio with faster-whisper.
 
 Written by the Claude Code (nLabtech) Visual Studio extension the first time dictation is
 used. It is yours: edit it, point it at another model, or delete it. The extension only
 writes it when it is missing.
+
+Two modes:
+  transcribe.py <audio> [model]  print the text for one file, then exit
+  transcribe.py --serve [model]  load the model once, print <<<READY>>>, then read one
+                                 audio path per line from stdin and answer with the text
+                                 followed by <<<END>>>
+
+The extension uses --serve so the model loads while you are still speaking instead of
+after you stop, and stays loaded for the next time. Loading it is most of the wait.
 """"""
 import sys
 
+READY = ""<<<READY>>>""
+END = ""<<<END>>>""
+ERR = ""<<<ERR>>>""
+NEED = ""<<<NEED>>>""
+DEFAULT_MODEL = ""large-v3-turbo""
+
+
+def pick_device():
+    """"""Prefer the GPU. The same model is several times faster on it, for the same words.""""""
+    try:
+        import ctranslate2
+
+        if ctranslate2.get_cuda_device_count() > 0:
+            return ""cuda"", ""float16""
+    except Exception:
+        pass
+    return ""cpu"", ""int8""
+
+
+def load(model_name, allow_download):
+    from faster_whisper import WhisperModel
+
+    device, compute = pick_device()
+    return WhisperModel(
+        model_name,
+        device=device,
+        compute_type=compute,
+        local_files_only=not allow_download,
+    )
+
+
+def text_of(model, path):
+    segments, _info = model.transcribe(path, vad_filter=True)
+    return "" "".join(s.text.strip() for s in segments).strip()
+
+
+def say(line):
+    sys.stdout.write(line + ""\n"")
+    sys.stdout.flush()
+
+
+def serve(model_name, allow_download):
+    try:
+        model = load(model_name, allow_download)
+    except Exception as exc:
+        # Nothing cached and we were not allowed to fetch it: say what is missing rather than
+        # downloading a gigabyte behind the developer's back.
+        if not allow_download:
+            say(NEED + "" "" + model_name)
+            return 4
+        say(ERR + "" "" + str(exc))
+        return 3
+
+    say(READY)
+    for line in sys.stdin:
+        path = line.strip()
+        if not path:
+            continue
+        try:
+            say(text_of(model, path))
+        except Exception as exc:
+            say(ERR + "" "" + str(exc))
+        say(END)
+    return 0
+
 
 def main():
-    if len(sys.argv) < 2:
-        sys.stderr.write(""usage: transcribe.py <audio> [model]\n"")
-        return 2
-
     try:
         sys.stdout.reconfigure(encoding=""utf-8"")
     except Exception:
         pass
 
+    args = sys.argv[1:]
+    allow_download = ""--allow-download"" in args
+    args = [a for a in args if a != ""--allow-download""]
+
+    if not args:
+        sys.stderr.write(""usage: transcribe.py <audio>|--serve [model] [--allow-download]\n"")
+        return 2
+
+    model_name = args[1] if len(args) > 1 else DEFAULT_MODEL
+    if args[0] == ""--serve"":
+        return serve(model_name, allow_download)
+
     try:
-        from faster_whisper import WhisperModel
+        model = load(model_name, True)
     except ImportError:
         sys.stderr.write(""faster-whisper is not installed\n"")
         return 3
 
-    model_name = sys.argv[2] if len(sys.argv) > 2 else ""large-v3-turbo""
-    model = WhisperModel(model_name, device=""cpu"", compute_type=""int8"")
-    segments, _info = model.transcribe(sys.argv[1], vad_filter=True)
-    sys.stdout.write("" "".join(s.text.strip() for s in segments).strip())
+    sys.stdout.write(text_of(model, args[0]))
     return 0
 
 
@@ -63,9 +142,43 @@ if __name__ == ""__main__"":
     sys.exit(main())
 ";
 
+    /// <summary>Printed by the script once the model is loaded and it can accept work.</summary>
+    public const string ReadyMarker = "<<<READY>>>";
+
+    /// <summary>Printed after each transcript, so the reader knows the answer is complete.</summary>
+    public const string EndMarker = "<<<END>>>";
+
+    /// <summary>Prefix of a line carrying a failure rather than a transcript.</summary>
+    public const string ErrorMarker = "<<<ERR>>>";
+
+    /// <summary>
+    /// Printed instead of <see cref="ReadyMarker"/> when the model is not on the machine yet. The
+    /// panel then asks before fetching it: it is about a gigabyte and a half, and a download nobody
+    /// agreed to - with no sign it is happening - is indistinguishable from the feature hanging.
+    /// </summary>
+    public const string NeedMarker = "<<<NEED>>>";
+
+    /// <summary>The flag that lets the script fetch a model it does not have.</summary>
+    public const string AllowDownloadFlag = "--allow-download";
+
+    /// <summary>
+    /// The opening line of the one-shot-only script shipped before serve mode existed. A file that
+    /// still starts with it is our own earlier output, so replacing it loses nobody's work - while
+    /// anything else on disk is the developer's and is left alone.
+    /// </summary>
+    public const string LegacyScriptOpening = "\"\"\"Transcribe one audio file with faster-whisper and print the text.";
+
     /// <summary>Builds the command line for the local transcriber script.</summary>
     public static string ComposeDefault(string pythonExe, string scriptPath) =>
         "\"" + pythonExe + "\" \"" + scriptPath + "\" \"" + AudioPlaceholder + "\"";
+
+    /// <summary>The arguments that start the local script as a warm, long-lived transcriber.</summary>
+    public static string ComposeServe(string scriptPath, bool allowDownload = false) =>
+        "\"" + scriptPath + "\" --serve" + (allowDownload ? " " + AllowDownloadFlag : string.Empty);
+
+    /// <summary>Whether a script on disk speaks the serve protocol; if not, one-shot still works.</summary>
+    public static bool SupportsServe(string? scriptText) =>
+        scriptText != null && scriptText.IndexOf(ReadyMarker, StringComparison.Ordinal) >= 0;
 
     /// <summary>
     /// Splits the template into an executable and its arguments, with the placeholder replaced by

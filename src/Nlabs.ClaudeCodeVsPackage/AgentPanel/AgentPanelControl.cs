@@ -254,6 +254,10 @@ internal sealed class AgentPanelControl : UserControl
                 ["micSaveFailed"] = "The recording could not be saved.",
                 ["sttTimeout"] = "Transcription took too long and was stopped.",
                 ["sttNoEngine"] = "No speech engine found. Install one (pip install faster-whisper) or set a command in Tools > Options > Claude Code (nLabtech).",
+                ["sttModelTitle"] = "Download the speech model?",
+                ["sttModelBody"] = "Dictation needs {0}, which is not on this machine yet. It is about 1.5 GB and is downloaded once. After that your speech is transcribed on your own machine - no audio is sent anywhere.",
+                ["download"] = "Download", ["sttDownloading"] = "Downloading the model -",
+                ["sttNoModel"] = "Dictation needs the speech model to be downloaded first.",
                 ["reviewPrompt"] = "Review my current uncommitted changes for bugs, security issues, and simple cleanups. Do not modify any files - just report your findings.",
             },
             ["tr"] = new System.Collections.Generic.Dictionary<string, string>
@@ -349,6 +353,10 @@ internal sealed class AgentPanelControl : UserControl
                 ["micSaveFailed"] = "Kayit kaydedilemedi.",
                 ["sttTimeout"] = "Yaziya cevirme cok uzun surdu, durduruldu.",
                 ["sttNoEngine"] = "Konusma motoru bulunamadi. Birini kur (pip install faster-whisper) ya da Tools > Options > Claude Code (nLabtech) altinda komut ayarla.",
+                ["sttModelTitle"] = "Konusma modeli indirilsin mi?",
+                ["sttModelBody"] = "Dikte icin {0} gerekli, bu makinede yok. Yaklasik 1.5 GB ve bir kez iniyor. Sonrasinda konusman kendi makinende yaziya cevriliyor - hicbir ses disari gitmiyor.",
+                ["download"] = "Indir", ["sttDownloading"] = "Model iniyor -",
+                ["sttNoModel"] = "Dikte icin once konusma modelinin indirilmesi gerekiyor.",
                 ["reviewPrompt"] = "Commit edilmemis mevcut degisikliklerimi hata, guvenlik sorunu ve basit iyilestirmeler icin incele. Hicbir dosyayi degistirme - sadece bulgulari raporla.",
             },
         };
@@ -396,6 +404,9 @@ internal sealed class AgentPanelControl : UserControl
     private DateTime _thinkingStart;
     private string? _speechCommand;  // the transcriber found on this machine, if any
     private bool _speechProbed;      // looked for one already - the answer will not change
+    private string? _speechPython;   // set only when we are driving our own script, not a custom command
+    private string? _speechScript;
+    private SpeechWorker? _speechWorker; // the engine kept loaded between dictations
     private StackPanel? _emptyState; // the welcome block, shown only while the feed is empty
     // Task call id -> the subagent it delegated to, so its later lines can be named.
     private readonly System.Collections.Generic.Dictionary<string, string> _subagentByToolId =
@@ -1201,7 +1212,7 @@ internal sealed class AgentPanelControl : UserControl
                         }
                         else if (!string.IsNullOrEmpty(preface))
                         {
-                            AddSubagentCard(SubagentName(parent), preface!);
+                            AddSubagentCard(KnownSubagent(parent), preface!);
                         }
 
                         string? owner = parent == null ? null : SubagentName(parent);
@@ -1217,9 +1228,11 @@ internal sealed class AgentPanelControl : UserControl
                     }
                     else
                     {
+                        // Looked up on the UI thread: the map is written there as calls arrive, and
+                        // reading it from the reader thread is a race for no gain.
                         string delegated = e.Text!;
-                        string who = SubagentName(parent);
-                        OnUi(() => AddSubagentCard(who, delegated));
+                        string owning = parent!;
+                        OnUi(() => AddSubagentCard(KnownSubagent(owning), delegated));
                     }
                 }
                 break;
@@ -1482,11 +1495,13 @@ internal sealed class AgentPanelControl : UserControl
 
     // What a delegated turn produced, kept in its own card so it never reads as the main answer. The
     // caption names the subagent: "some agent said this" and "Claude said this" are different claims.
-    private void AddSubagentCard(string name, string text)
+    private void AddSubagentCard(string? name, string text)
     {
+        // Unnamed when the CLI did not say which subagent it was; the caption then stands alone
+        // rather than repeating the word twice with a dash between.
         var caption = new TextBlock
         {
-            Text = Loc("subagent") + " - " + name,
+            Text = string.IsNullOrEmpty(name) ? Loc("subagent") : Loc("subagent") + " - " + name,
             FontSize = 10,
             Opacity = 0.55,
             Margin = new Thickness(0, 0, 0, 5),
@@ -1529,8 +1544,11 @@ internal sealed class AgentPanelControl : UserControl
         }
     }
 
-    private string SubagentName(string toolUseId) =>
-        _subagentByToolId.TryGetValue(toolUseId, out string name) ? name : Loc("subagent");
+    /// <summary>The subagent a delegation call named, or null when the CLI did not say.</summary>
+    private string? KnownSubagent(string toolUseId) =>
+        _subagentByToolId.TryGetValue(toolUseId, out string name) ? name : null;
+
+    private string SubagentName(string toolUseId) => KnownSubagent(toolUseId) ?? Loc("subagent");
 
     // A completed assistant message restored from history: rendered and given a Copy action at once.
     private void AddStoredAssistant(string text)
@@ -2844,7 +2862,12 @@ internal sealed class AgentPanelControl : UserControl
     {
         _lang = (_langCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "en";
         foreach (Action apply in _localizers) apply();
-        RebuildMessages(); // role labels are rebuilt with the new language
+
+        // The feed is deliberately NOT rebuilt. Only the messages are stored as text, so replaying it
+        // destroyed everything that is not a plain message - subagent cards, tool chips, turn
+        // footers, attached images, and any approval still waiting for an answer, which would leave
+        // the hook hanging until it timed out. A turn already on screen is a record of what happened,
+        // and re-labelling history is not worth losing it for.
         SavePreferences();
     }
 
@@ -3427,7 +3450,8 @@ internal sealed class AgentPanelControl : UserControl
     // Studio it is a white box with a warning triangle, which reads as "something broke" rather than
     // as the panel asking a question. This one is drawn on the panel, so it is themed like the rest
     // of it - and a destructive confirmation is coloured as one.
-    private System.Threading.Tasks.Task<bool> ConfirmAsync(string titleKey, string bodyKey, string confirmKey, bool destructive)
+    private System.Threading.Tasks.Task<bool> ConfirmAsync(
+        string titleKey, string bodyKey, string confirmKey, bool destructive, string? bodyText = null)
     {
         var answer = new System.Threading.Tasks.TaskCompletionSource<bool>();
         if (_scrim == null) return System.Threading.Tasks.Task.FromResult(false);
@@ -3443,7 +3467,7 @@ internal sealed class AgentPanelControl : UserControl
 
         var body = new TextBlock
         {
-            Text = Loc(bodyKey),
+            Text = bodyText ?? Loc(bodyKey),
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
             Opacity = 0.8,
@@ -4232,6 +4256,65 @@ internal sealed class AgentPanelControl : UserControl
         if (!_recorder.Start()) { _status.Text = Loc("micFailed"); return; }
         SetMicActive(true);
         _status.Text = Loc("recording");
+
+        // Load the model over the top of the developer speaking. Loading it is most of the wait, and
+        // doing it here rather than after the stop click is what makes dictation feel immediate.
+        WarmSpeech();
+    }
+
+    // Brings up the warm transcriber, if this machine is running our own script. A developer who
+    // configured their own command keeps the one-shot path: we do not know that command's protocol.
+    private void WarmSpeech(bool allowDownload = false)
+    {
+        if (_speechPython == null || _speechScript == null) return;
+        if (SpeechCommand.IsConfigured(ExtensionOptions.SpeechToTextCommand)) return;
+
+        try
+        {
+            if (!SpeechCommand.SupportsServe(File.ReadAllText(_speechScript))) return;
+            if (allowDownload)
+            {
+                _speechWorker?.Dispose();
+                _speechWorker = null;
+            }
+
+            _speechWorker ??= new SpeechWorker(
+                _speechPython, SpeechCommand.ComposeServe(_speechScript, allowDownload));
+            _speechWorker.BeginWarmUp();
+            if (allowDownload) ReportDownloadProgress();
+        }
+        catch
+        {
+            // Nothing to report: the one-shot path still works, it is only slower.
+        }
+    }
+
+    // Asks before fetching a speech model. It names the model and what it weighs, because the honest
+    // objection to a silent gigabyte-and-a-half download is not that it is slow - it is that nobody
+    // agreed to it. Says plainly that transcription then runs locally: that is why it is worth it.
+    private System.Threading.Tasks.Task<bool> ConfirmModelDownloadAsync(string model) =>
+        ConfirmAsync("sttModelTitle", "sttModelBody", "download", destructive: false,
+            bodyText: string.Format(Loc("sttModelBody"), model));
+
+    // Mirrors the download's own percentage into the status line while it runs. Without it a first
+    // dictation sits silent for several minutes and looks exactly like a hang.
+    private void ReportDownloadProgress()
+    {
+        // No main-thread assertion: the only thing this touches is inside the tick, which the
+        // dispatcher already runs on the UI thread.
+        var timer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(400),
+        };
+        timer.Tick += (_, __) =>
+        {
+            SpeechWorker? worker = _speechWorker;
+            if (worker == null || worker.IsReady) { timer.Stop(); return; }
+
+            string? line = worker.Progress;
+            if (!string.IsNullOrEmpty(line)) _status.Text = Loc("sttDownloading") + " " + line;
+        };
+        timer.Start();
     }
 
     // Finds something that can transcribe. A command set in Options always wins; otherwise look for
@@ -4252,6 +4335,8 @@ internal sealed class AgentPanelControl : UserControl
 
             string? script = WriteTranscriberScript();
             if (script == null) break;
+            _speechPython = python;
+            _speechScript = script;
             _speechCommand = SpeechCommand.ComposeDefault(python, script);
             break;
         }
@@ -4272,7 +4357,21 @@ internal sealed class AgentPanelControl : UserControl
 
             string path = Path.Combine(dir, "transcribe.py");
             if (!File.Exists(path))
+            {
                 File.WriteAllText(path, SpeechCommand.LocalScript, new System.Text.UTF8Encoding(false));
+                return path;
+            }
+
+            // An earlier version of this script could only transcribe one file and exit, which meant
+            // loading the model again for every dictation. Replace it - but only while it is still
+            // ours, untouched; a script the developer has edited is theirs and is left as it is.
+            string existing = File.ReadAllText(path);
+            if (!SpeechCommand.SupportsServe(existing) &&
+                existing.TrimStart().StartsWith(SpeechCommand.LegacyScriptOpening, StringComparison.Ordinal))
+            {
+                File.WriteAllText(path, SpeechCommand.LocalScript, new System.Text.UTF8Encoding(false));
+            }
+
             return path;
         }
         catch { return null; }
@@ -4285,6 +4384,35 @@ internal sealed class AgentPanelControl : UserControl
         _status.Text = Loc("transcribing");
         try
         {
+            // The warm engine first: it was started when recording began, so by now the model is
+            // usually loaded and this is just the transcription. A null answer means it could not
+            // help - it never means dictation failed, so fall through to running the engine once.
+            if (_speechWorker != null)
+            {
+                // Null means the worker could not answer; an empty string means it listened and
+                // heard nothing, which is a real answer and must not be retried the slow way.
+                string? warm = await _speechWorker.TranscribeAsync(wavPath, 300000);
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+                // It stopped because the model is not on this machine. Ask - naming the model and
+                // roughly what it weighs - rather than pulling a gigabyte and a half unannounced.
+                string? missing = _speechWorker.MissingModel;
+                if (warm == null && !string.IsNullOrEmpty(missing))
+                {
+                    if (!await ConfirmModelDownloadAsync(missing!)) { _status.Text = Loc("sttNoModel"); return; }
+
+                    WarmSpeech(allowDownload: true);
+                    warm = _speechWorker == null ? null : await _speechWorker.TranscribeAsync(wavPath, 1800000);
+                    await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                }
+
+                if (warm != null)
+                {
+                    UseTranscript(SpeechCommand.CleanTranscript(warm), heard: true);
+                    return;
+                }
+            }
+
             string? template = await ResolveSpeechCommandAsync();
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
             if (template == null) { _status.Text = Loc("sttNoEngine"); return; }
@@ -4299,24 +4427,32 @@ internal sealed class AgentPanelControl : UserControl
 
             if (timedOut) { _status.Text = Loc("sttTimeout"); return; }
 
-            string text = ok ? SpeechCommand.CleanTranscript(output) : string.Empty;
-
-            if (text.Length == 0)
-            {
-                _status.Text = Loc(ok ? "sttEmpty" : "sttFailed");
-                return;
-            }
-
-            string existing = _input.Text ?? string.Empty;
-            _input.Text = existing.Length == 0 ? text : existing.TrimEnd() + " " + text;
-            _input.CaretIndex = _input.Text.Length;
-            _input.Focus();
-            _status.Text = Loc("hello");
+            UseTranscript(ok ? SpeechCommand.CleanTranscript(output) : string.Empty, ok);
         }
         finally
         {
             try { if (System.IO.File.Exists(wavPath)) System.IO.File.Delete(wavPath); } catch { }
         }
+    }
+
+    // Appends what was said to whatever is already typed, rather than replacing it: dictation is
+    // another way to add to the message, not a different way to start one. <paramref name="heard"/>
+    // separates "the engine listened and there was nothing" from "the engine did not run".
+    private void UseTranscript(string text, bool heard)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (text.Length == 0)
+        {
+            _status.Text = Loc(heard ? "sttEmpty" : "sttFailed");
+            return;
+        }
+
+        string existing = _input.Text ?? string.Empty;
+        _input.Text = existing.Length == 0 ? text : existing.TrimEnd() + " " + text;
+        _input.CaretIndex = _input.Text.Length;
+        _input.Focus();
+        _status.Text = Loc("hello");
     }
 
     // The mic button carries the recording state: filled accent while live, quiet otherwise.
@@ -4955,6 +5091,8 @@ internal sealed class AgentPanelControl : UserControl
     public void ShutDown()
     {
         _recorder.Dispose(); // a live recording must not outlive the panel
+        _speechWorker?.Dispose(); // nor must the loaded speech model keep holding memory
+        _speechWorker = null;
         _session?.Dispose();
         _session = null;
         _approval?.Dispose();

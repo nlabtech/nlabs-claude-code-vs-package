@@ -6,6 +6,47 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Tests;
 
 public class CliStreamProtocolTests
 {
+    [Theory]
+    [InlineData("Task")]
+    [InlineData("Agent")]
+    public void A_delegation_call_carries_the_subagent_it_named(string tool)
+    {
+        // The CLI has shipped this tool under both names. Missing one loses the subagent's name, and
+        // every line it produces then shows up as an anonymous "subagent" in the panel.
+        string line =
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\"," +
+            "\"name\":\"" + tool + "\",\"input\":{\"subagent_type\":\"reviewer\",\"description\":\"look\"}}]}}";
+
+        CliEvent? e = CliStreamProtocol.Parse(line);
+
+        Assert.NotNull(e!.Tools);
+        ToolCall call = Assert.Single(e.Tools!);
+        Assert.Equal("t1", call.Id);
+        Assert.Equal("reviewer", call.Subagent);
+    }
+
+    [Fact]
+    public void An_ordinary_tool_names_no_subagent()
+    {
+        string line =
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t2\"," +
+            "\"name\":\"Read\",\"input\":{\"file_path\":\"a.cs\"}}]}}";
+
+        CliEvent? e = CliStreamProtocol.Parse(line);
+
+        Assert.Null(Assert.Single(e!.Tools!).Subagent);
+    }
+
+    [Theory]
+    [InlineData("Task", true)]
+    [InlineData("Agent", true)]
+    [InlineData("Read", false)]
+    [InlineData(null, false)]
+    public void Delegation_is_recognised_by_either_name(string? tool, bool expected)
+    {
+        Assert.Equal(expected, CliStreamProtocol.IsDelegation(tool));
+    }
+
     [Fact]
     public void UserMessage_is_a_stream_json_user_turn()
     {

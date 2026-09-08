@@ -359,15 +359,23 @@ public static class CliStreamProtocol
             {
                 Id = (string?)block["id"] ?? string.Empty,
                 Name = name,
-                // A Task call names the subagent it is handing work to. Everything the CLI reports
-                // under this call's id afterwards belongs to that subagent, which is how the panel
-                // can say whose work it is showing rather than blurring it into the main turn.
-                Subagent = name == "Task" ? (string?)block["input"]?["subagent_type"] : null,
+                // A delegation call names the subagent it is handing work to. Everything the CLI
+                // reports under this call's id afterwards belongs to that subagent, which is how the
+                // panel can say whose work it is showing rather than blurring it into the main turn.
+                // The tool has gone by more than one name across CLI versions, so match either.
+                Subagent = IsDelegation(name) ? (string?)block["input"]?["subagent_type"] : null,
                 Summary = SummariseToolInput(name, block["input"]),
             });
         }
         return list;
     }
+
+    /// <summary>
+    /// Whether a tool call is the one that hands work to a subagent. The CLI has shipped this as
+    /// both <c>Task</c> and <c>Agent</c>; matching only one silently loses the subagent's name, and
+    /// every line it produces then shows up as an anonymous "subagent" instead.
+    /// </summary>
+    public static bool IsDelegation(string? toolName) => toolName == "Task" || toolName == "Agent";
 
     // A readable one-liner for a tool call: the field that matters for the common tools, else the
     // first short string in the input. Always trimmed to a single line of reasonable length.
