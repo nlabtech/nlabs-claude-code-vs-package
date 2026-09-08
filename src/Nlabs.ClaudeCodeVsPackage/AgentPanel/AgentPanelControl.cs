@@ -42,6 +42,9 @@ internal sealed class AgentPanelControl : UserControl
     // A faint accent-tinted fill for the user's own turn - the same hue as the accent, barely there.
     private readonly SolidColorBrush UserFill = new SolidColorBrush(Color.FromArgb(0x1F, 0xD9, 0x77, 0x57));
     private static readonly Brush OnAccent = Frozen(Color.FromRgb(0xFF, 0xFF, 0xFF));
+    // A neutral grey wash rather than a theme colour: eight percent of mid-grey darkens a light
+    // background and lightens a dark one by the same amount, so one brush suits both themes.
+    private static readonly Brush CardFill = Frozen(Color.FromArgb(0x14, 0x80, 0x80, 0x80));
     // The one colour outside the accent: danger. A high-risk approval must not read as brand colour.
     private static readonly Brush HighRisk = Frozen(Color.FromRgb(0xC0, 0x39, 0x2B));
 
@@ -485,6 +488,31 @@ internal sealed class AgentPanelControl : UserControl
         // Everything is built and every label registered, so it's safe to apply the stored choices -
         // selecting an item fires the change handlers, which re-localize and recolour.
         ApplyPreferences();
+
+        // Shell styles resolve only once this control is in Visual Studio's own resource scope.
+        Loaded += (_, __) => AdoptShellStyles();
+    }
+
+    // Dresses the standard WPF controls in Visual Studio's own styles.
+    //
+    // Without this a ComboBox and a ScrollBar keep the default Windows chrome, and the panel reads as
+    // a foreign window pasted into the IDE rather than part of it - the single biggest reason a
+    // hand-built tool window looks wrong next to Solution Explorer.
+    private void AdoptShellStyles()
+    {
+        AdoptShellStyle(typeof(ComboBox), VsResourceKeys.ComboBoxStyleKey);
+        AdoptShellStyle(typeof(System.Windows.Controls.Primitives.ScrollBar), VsResourceKeys.ScrollBarStyleKey);
+    }
+
+    private void AdoptShellStyle(Type target, object key)
+    {
+        try
+        {
+            // An implicit style keyed by type reaches every one of them, including the scrollbars
+            // inside controls this panel never touches directly.
+            if (TryFindResource(key) is Style style && style.TargetType == target) Resources[target] = style;
+        }
+        catch { /* an older shell without this key - the default look is not worth throwing over */ }
     }
 
     // The brand bar: product name plus a subtle nLabtech tag, over a hairline divider.
@@ -518,24 +546,13 @@ internal sealed class AgentPanelControl : UserControl
         brand.Children.Add(title);
         brand.Children.Add(tag);
 
-        // Language and accent live top-right, out of the way of the conversation itself.
-        var prefs = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        _langCombo.Margin = new Thickness(0, 0, 6, 0);
-        _accentCombo.Margin = new Thickness(0);
-        prefs.Children.Add(_langCombo);
-        prefs.Children.Add(_accentCombo);
-
-        var row = new DockPanel { LastChildFill = false };
-        DockPanel.SetDock(brand, Dock.Left);
-        DockPanel.SetDock(prefs, Dock.Right);
-        row.Children.Add(brand);
-        row.Children.Add(prefs);
-
+        // Brand only. The selectors that used to sit up here moved down beside the chat switcher, so
+        // this reads as a title bar rather than the first row of a form.
         var bar = new Border
         {
-            Padding = new Thickness(12, 9, 12, 9),
+            Padding = new Thickness(12, 7, 12, 7),
             BorderThickness = new Thickness(0, 0, 0, 1),
-            Child = row,
+            Child = brand,
         };
         bar.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
         return bar;
@@ -545,18 +562,15 @@ internal sealed class AgentPanelControl : UserControl
     // switcher; Enter commits it, Escape or a click away cancels.
     private UIElement BuildChatRow()
     {
-        var row = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(12, 8, 12, 0),
-        };
-        row.Children.Add(LabelFor("chat", _convCombo));
+        var chat = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        MakePill(_convCombo);
+        chat.Children.Add(_convCombo);
 
         _renameBox = new TextBox
         {
             MinWidth = 150,
-            FontSize = 12,
-            Margin = new Thickness(0, 0, 8, 0),
+            FontSize = 11,
+            Margin = new Thickness(0, 0, 5, 0),
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
         };
@@ -564,20 +578,29 @@ internal sealed class AgentPanelControl : UserControl
         _renameBox.SetResourceReference(TextBox.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
         _renameBox.KeyDown += OnRenameKey;
         _renameBox.LostKeyboardFocus += (_, __) => EndRename();
-        row.Children.Add(_renameBox);
+        chat.Children.Add(_renameBox);
 
-        row.Children.Add(MakeGhostButton("new", NewConversation));
-        var rename = MakeGhostButton("rename", BeginRename);
-        rename.Margin = new Thickness(6, 0, 0, 0);
-        row.Children.Add(rename);
-        var del = MakeGhostButton("delete", DeleteConversation);
-        del.Margin = new Thickness(6, 0, 0, 0);
-        row.Children.Add(del);
+        // Glyphs, not words: three labelled buttons beside a dropdown was most of the panel's chrome,
+        // and what each one does is already in its tooltip.
+        chat.Children.Add(MakeIconButton("+", "new", NewConversation));
+        chat.Children.Add(MakeIconButton("✎", "rename", BeginRename));
+        chat.Children.Add(MakeIconButton("\U0001F5D1", "delete", DeleteConversation));
+
+        // Language and accent: preferences, so they sit at the far end, away from the chat controls.
+        var prefs = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        prefs.Children.Add(MakePill(_langCombo));
+        prefs.Children.Add(MakePill(_accentCombo));
+
+        var row = new DockPanel { LastChildFill = false, Margin = new Thickness(12, 6, 12, 0) };
+        DockPanel.SetDock(chat, Dock.Left);
+        DockPanel.SetDock(prefs, Dock.Right);
+        row.Children.Add(chat);
+        row.Children.Add(prefs);
         return row;
     }
 
-    // Shows the rename box seeded with the current title. LabelFor keeps the switcher inside its own
-    // panel, so hide the combo itself and show the box beside it.
+    // Shows the rename box seeded with the current title: the switcher and the box are siblings, so
+    // renaming swaps one for the other in place rather than opening a dialog.
     private void BeginRename()
     {
         if (_renameBox == null) return;
@@ -671,16 +694,18 @@ internal sealed class AgentPanelControl : UserControl
         inner.Children.Add(inputGrid);
         inner.Children.Add(toolbar);
 
+        // The composer is the one branded surface in the panel: an accent hairline around a faint card,
+        // so the eye lands on where you type. A themed grey border made it just another grouping box.
         var inputBorder = new Border
         {
-            CornerRadius = new CornerRadius(12),
+            CornerRadius = new CornerRadius(10),
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(10, 8, 8, 8),
+            BorderBrush = Accent,
+            Background = CardFill,
+            Padding = new Thickness(8, 6, 8, 6),
             Child = inner,
             AllowDrop = true,
         };
-        inputBorder.SetResourceReference(Border.BackgroundProperty, VsBrushes.ComboBoxBackgroundKey);
-        inputBorder.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
         inputBorder.DragEnter += OnInputDragOver;
         inputBorder.DragOver += OnInputDragOver;
         inputBorder.DragLeave += (_, __) => inputBorder.BorderThickness = new Thickness(1);
@@ -767,7 +792,7 @@ internal sealed class AgentPanelControl : UserControl
         {
             Foreground = OnAccent,
             FontWeight = FontWeights.SemiBold,
-            FontSize = 12,
+            FontSize = 11,
             HorizontalAlignment = HorizontalAlignment.Center,
         };
         Bind(() => _primaryLabel.Text = Loc(_busy ? "stop" : "send"));
@@ -775,8 +800,8 @@ internal sealed class AgentPanelControl : UserControl
         {
             Child = _primaryLabel,
             Background = Accent,
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(16, 6, 16, 6),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(13, 4, 13, 4),
             Cursor = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -1781,7 +1806,7 @@ internal sealed class AgentPanelControl : UserControl
 
         // Offered here as well as in the status bar: choosing where Claude works is the one thing a
         // developer may need to do before their first message.
-        Border folder = MakeGhostButton("pickFolder", PickFolder);
+        Border folder = MakeAccentButton("pickFolder", PickFolder);
         folder.HorizontalAlignment = HorizontalAlignment.Left;
         folder.Margin = new Thickness(0, 14, 0, 0);
         stack.Children.Add(folder);
@@ -2165,24 +2190,21 @@ internal sealed class AgentPanelControl : UserControl
             combo.Items.Add(new ComboBoxItem { Content = label, Tag = value });
         }
         combo.SelectedIndex = 0;
+        MakePill(combo);
         return combo;
     }
 
-    private UIElement LabelFor(string key, UIElement control)
+    // A selector sized as a pill rather than a form field: small, and free to shrink. The width is
+    // deliberately not fixed - when the panel is docked narrow the pills give way instead of wrapping
+    // onto a second line and pushing Send away from the selectors it belongs beside.
+    private static ComboBox MakePill(ComboBox combo)
     {
-        var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 6, 0) };
-        var label = new TextBlock
-        {
-            FontSize = 11,
-            Opacity = 0.55,
-            Margin = new Thickness(0, 0, 5, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-        Bind(() => label.Text = Loc(key));
-        panel.Children.Add(label);
-        panel.Children.Add(control);
-        return panel;
+        combo.FontSize = 11;
+        combo.MinWidth = 0;
+        combo.MaxWidth = 150;
+        combo.Margin = new Thickness(0, 0, 5, 0);
+        combo.VerticalAlignment = VerticalAlignment.Center;
+        return combo;
     }
 
     // A filled accent button (Send). Built as a Border so it is fully rounded and branded, with a
@@ -2193,16 +2215,16 @@ internal sealed class AgentPanelControl : UserControl
         {
             Foreground = OnAccent,
             FontWeight = FontWeights.SemiBold,
-            FontSize = 12,
+            FontSize = 11,
         };
         Bind(() => label.Text = Loc(key));
         var button = new Border
         {
             Child = label,
             Background = Accent,
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(14, 6, 14, 6),
-            Margin = new Thickness(8, 0, 0, 0),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(13, 4, 13, 4),
+            Margin = new Thickness(4, 0, 0, 0),
             Cursor = Cursors.Hand,
         };
         label.HorizontalAlignment = HorizontalAlignment.Center;
@@ -2212,36 +2234,35 @@ internal sealed class AgentPanelControl : UserControl
         return button;
     }
 
-    // A quiet outlined button (New, Stop): themed border, no fill, hand cursor.
+    // A quiet borderless button (New, Rename, Delete): a toolbar action, not a form control. Outlining
+    // these turned every one of them into a box and made the panel read as a dialog; the only thing
+    // they need is to light up under the pointer.
     private Border MakeGhostButton(string key, Action onClick)
     {
-        var label = new TextBlock { FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        var label = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
         label.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
         Bind(() => label.Text = Loc(key));
         var button = new Border
         {
             Child = label,
             Background = Brushes.Transparent,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(12, 4, 12, 4),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(7, 3, 7, 3),
             Cursor = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        button.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
-        button.MouseEnter += (_, __) => button.Opacity = 0.7;
-        button.MouseLeave += (_, __) => button.Opacity = 1.0;
+        HoverTint(button);
         button.MouseLeftButtonUp += (_, __) => onClick();
         return button;
     }
 
-    // A single-glyph round button (the attach +), with a localized tooltip.
+    // A single-glyph flat button (the attach +), with a localized tooltip.
     private Border MakeIconButton(string glyph, string tipKey, Action onClick)
     {
         var label = new TextBlock
         {
             Text = glyph,
-            FontSize = 15,
+            FontSize = 14,
             FontWeight = FontWeights.SemiBold,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
@@ -2250,18 +2271,25 @@ internal sealed class AgentPanelControl : UserControl
         var button = new Border
         {
             Child = label,
-            Width = 30,
-            Height = 30,
-            CornerRadius = new CornerRadius(8),
+            Width = 26,
+            Height = 26,
+            CornerRadius = new CornerRadius(4),
             Background = Brushes.Transparent,
             Cursor = Cursors.Hand,
-            Margin = new Thickness(0, 0, 6, 0),
+            Margin = new Thickness(0, 0, 2, 0),
         };
         Bind(() => button.ToolTip = Loc(tipKey));
-        button.MouseEnter += (_, __) => button.Opacity = 0.6;
-        button.MouseLeave += (_, __) => button.Opacity = 1.0;
+        HoverTint(button);
         button.MouseLeftButtonUp += (_, __) => onClick();
         return button;
+    }
+
+    // Hover as a faint wash of the accent instead of a change in opacity: dimming a control to show it
+    // is under the pointer reads as "disabled", which is the opposite of what a hover means.
+    private void HoverTint(Border button)
+    {
+        button.MouseEnter += (_, __) => button.Background = UserFill;
+        button.MouseLeave += (_, __) => button.Background = Brushes.Transparent;
     }
 
     // A quiet status-bar button: muted text that brightens on hover. The label is returned so the
@@ -2679,20 +2707,35 @@ internal sealed class AgentPanelControl : UserControl
         _slashList.Items.Clear();
         foreach (CompletionItem c in matches)
         {
-            var name = new TextBlock { Text = c.Label, FontWeight = FontWeights.SemiBold, FontSize = 12.5 };
-            name.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            // Name and description on one line, the names in a monospace column so they align into a
+            // list that can be scanned down. Two-line rows turned twenty commands into a wall.
+            var row = new Grid { Margin = new Thickness(6, 2, 6, 2) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MinWidth = 96 });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var name = new TextBlock
+            {
+                Text = c.Label,
+                FontFamily = MonoFont,
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 11.5,
+                Foreground = Accent,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            row.Children.Add(name);
+
             var desc = new TextBlock
             {
                 Text = c.Description,
-                FontSize = 11,
+                FontSize = 10.5,
                 Opacity = 0.6,
+                Margin = new Thickness(10, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
             };
             desc.SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
-
-            var row = new StackPanel { Margin = new Thickness(6, 3, 6, 3) };
-            row.Children.Add(name);
-            if (!string.IsNullOrEmpty(c.Description)) row.Children.Add(desc);
+            Grid.SetColumn(desc, 1);
+            row.Children.Add(desc);
 
             _slashList.Items.Add(new ListBoxItem { Content = row, Tag = c, Padding = new Thickness(2) });
         }
