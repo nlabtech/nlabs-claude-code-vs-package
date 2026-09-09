@@ -55,6 +55,12 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
     private readonly IdeLockFile _lockFile = new IdeLockFile();
     private int _lockedPort;
 
+    /// <summary>Keeps the lock file's workspace folders in step with the open solution.</summary>
+    private SolutionLockWatcher? _solutionWatcher;
+
+    /// <summary>The token the current lock file was written with; reused when it is rewritten.</summary>
+    private string _lockedToken = string.Empty;
+
     protected override async Task InitializeAsync(
         CancellationToken cancellationToken,
         IProgress<ServiceProgressData> progress)
@@ -115,9 +121,30 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
         // only the port, this process id, the connection token and the open workspace folders -
         // nothing about the machine, the account or the subscription.
         _lockedPort = bridge.Port;
+        _lockedToken = bridge.Token;
+        WriteLockFile();
+
+        // The folder list is what the CLI matches its working directory against, and it is the one
+        // part of this that changes while Visual Studio runs - so follow the solution rather than
+        // describing whatever happened to be open at load.
+        _solutionWatcher?.Dispose();
+        _solutionWatcher = SolutionLockWatcher.Start(
+            GetService(typeof(SVsSolution)) as IVsSolution, WriteLockFile);
+    }
+
+    /// <summary>
+    /// Publishes the endpoint so <c>claude</c> can discover Visual Studio. The file carries only the
+    /// port, this process id, the connection token and the open workspace folders - nothing about
+    /// the machine, the account or the subscription.
+    /// </summary>
+    private void WriteLockFile()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (_lockedPort == 0) return;
+
         _lockFile.Write(
-            port: bridge.Port,
-            authToken: bridge.Token,
+            port: _lockedPort,
+            authToken: _lockedToken,
             processId: CurrentProcessId(),
             ideName: ServerName,
             workspaceFolders: CollectWorkspaceFolders());
@@ -126,10 +153,14 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
     /// <summary>Removes the current lock file and tears down the bridge and diff session.</summary>
     private void StopBridge()
     {
+        _solutionWatcher?.Dispose();
+        _solutionWatcher = null;
+
         if (_lockedPort != 0)
         {
             _lockFile.Remove(_lockedPort);
             _lockedPort = 0;
+            _lockedToken = string.Empty;
         }
 
         _diff?.Dispose();
