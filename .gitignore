@@ -18,6 +18,9 @@ bld/
 *.vsix
 *.vsidx
 
+# Stamped copies of the built package, for handing to someone or installing
+artifacts/
+
 # Visual Studio user / temp files
 .vs/
 *.user

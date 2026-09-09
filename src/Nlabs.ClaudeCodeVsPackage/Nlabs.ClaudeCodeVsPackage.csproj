@@ -122,4 +122,24 @@
     </PackageReference>
   </ItemGroup>
 
+  <!--
+    The package itself lands several folders deep in bin\<Configuration>\net472, which is a poor
+    place to hand anyone a build from - and the name there carries no version, so two builds are
+    indistinguishable once copied anywhere. This drops a stamped copy at the repository root under
+    artifacts\, so "the extension" is one obvious file instead of a path to remember.
+
+    Additive on purpose: the normal build output stays exactly where the VSSDK puts it, nothing is
+    moved, and artifacts\ is ignored by git.
+  -->
+  <Target Name="CopyVsixToArtifacts" AfterTargets="CreateVsixContainer"
+          Condition="'$(TargetVsixContainer)' != '' AND Exists('$(TargetVsixContainer)')">
+    <PropertyGroup>
+      <ArtifactsDir>$(MSBuildThisFileDirectory)..\..\artifacts\</ArtifactsDir>
+      <ArtifactVsix>$(ArtifactsDir)$(AssemblyName)-$(Version)-$(Configuration).vsix</ArtifactVsix>
+    </PropertyGroup>
+    <MakeDir Directories="$(ArtifactsDir)" />
+    <Copy SourceFiles="$(TargetVsixContainer)" DestinationFiles="$(ArtifactVsix)" />
+    <Message Importance="high" Text="VSIX -&gt; $(ArtifactVsix)" />
+  </Target>
+
 </Project>

@@ -1,0 +1,29 @@
+<Project>
+
+  <!--
+    Settings that apply to every project in the repository.
+  -->
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <!--
+      A shipped build must not carry the machine it was built on.
+
+      By default the compiler writes the symbol file's full path into the assembly's debug
+      directory, so a Release DLL contains something like
+      "D:\...\src\<project>\obj\Release\net472\<name>.pdb" - the drive, the folder layout and
+      the repository's own location on disk, readable with a text editor by anyone who
+      downloads the extension. Symbols are not published for this extension, so the whole
+      debug directory is dropped rather than merely redirected.
+
+      Debug builds are untouched: F5 into the experimental hive still gets full symbols.
+    -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+
+    <!-- Belt and braces: if a Release build is ever given symbols again, keep the paths inside
+         them relative rather than rooted on whoever built it. -->
+    <Deterministic>true</Deterministic>
+    <DeterministicSourcePaths Condition="'$(DebugType)' != 'none'">true</DeterministicSourcePaths>
+  </PropertyGroup>
+
+</Project>
