@@ -33,7 +33,7 @@
       Version/FileVersion DO move with each release (this is what the manifest and the
       file properties show), so you still get a real, human-meaningful version number.
     -->
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>$(Version).0</FileVersion>
   </PropertyGroup>
@@ -80,6 +80,19 @@
        assemblies. (None + IncludeInVSIX is not honoured by this build-tools version.) -->
   <ItemGroup>
     <Content Include="icon.png">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+  </ItemGroup>
+
+  <!-- The licence and the change log are what the extension manager and the Marketplace listing
+       show for <License> and <ReleaseNotes>, so the manifest names them - which means they have to
+       be inside the package, not merely in the repository. Linked from the root so there is one
+       copy of each and no chance of the shipped text drifting from the committed one. -->
+  <ItemGroup>
+    <Content Include="..\..\LICENSE" Link="LICENSE">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+    <Content Include="..\..\CHANGELOG.md" Link="CHANGELOG.md">
       <IncludeInVSIX>true</IncludeInVSIX>
     </Content>
   </ItemGroup>
@@ -131,6 +144,23 @@
     Additive on purpose: the normal build output stays exactly where the VSSDK puts it, nothing is
     moved, and artifacts\ is ignored by git.
   -->
+  <!--
+    The version lives in two files: this one drives the assembly, the manifest drives what Visual
+    Studio installs and compares against what is already there. They are read by different tools, so
+    nothing complains when they drift - and the symptom is silent: the installer sees the version it
+    already has and keeps the old extension, so a build "does not take" for reasons no error explains.
+    Cheaper to fail the build than to debug that.
+  -->
+  <Target Name="CheckVsixVersionMatches" BeforeTargets="CreateVsixContainer">
+    <XmlPeek XmlInputPath="$(MSBuildThisFileDirectory)source.extension.vsixmanifest"
+             Query="/vsx:PackageManifest/vsx:Metadata/vsx:Identity/@Version"
+             Namespaces="&lt;Namespace Prefix='vsx' Uri='http://schemas.microsoft.com/developer/vsx-schema/2011' /&gt;">
+      <Output TaskParameter="Result" ItemName="ManifestVersion" />
+    </XmlPeek>
+    <Error Condition="'@(ManifestVersion)' != '' AND '@(ManifestVersion)' != '$(Version)'"
+           Text="Version mismatch: the project says $(Version), source.extension.vsixmanifest says @(ManifestVersion). Visual Studio installs the manifest's version, so update both." />
+  </Target>
+
   <Target Name="CopyVsixToArtifacts" AfterTargets="CreateVsixContainer"
           Condition="'$(TargetVsixContainer)' != '' AND Exists('$(TargetVsixContainer)')">
     <PropertyGroup>
