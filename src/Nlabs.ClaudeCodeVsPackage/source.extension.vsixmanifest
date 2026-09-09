@@ -21,6 +21,7 @@ Requires the Claude Code CLI and your own Claude account; this extension provide
     <License>LICENSE</License>
     <ReleaseNotes>CHANGELOG.md</ReleaseNotes>
     <Icon>icon.png</Icon>
+    <PreviewImage>preview.jpg</PreviewImage>
     <Tags>claude, claude code, ai, agent, cli, debugger, productivity</Tags>
   </Metadata>
 

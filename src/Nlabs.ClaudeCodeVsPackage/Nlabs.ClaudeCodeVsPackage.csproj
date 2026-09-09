@@ -82,6 +82,10 @@
     <Content Include="icon.png">
       <IncludeInVSIX>true</IncludeInVSIX>
     </Content>
+    <!-- The listing screenshot, referenced by the manifest's <PreviewImage>. -->
+    <Content Include="preview.jpg">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
   </ItemGroup>
 
   <!-- The licence and the change log are what the extension manager and the Marketplace listing
