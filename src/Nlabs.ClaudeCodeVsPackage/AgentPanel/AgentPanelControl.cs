@@ -1671,11 +1671,136 @@ internal sealed class AgentPanelControl : UserControl
                 case MarkdownBlockKind.Bullet:
                     container.Children.Add(BuildBullet(block));
                     break;
+                case MarkdownBlockKind.Table:
+                    container.Children.Add(BuildTable(block));
+                    break;
+                case MarkdownBlockKind.Rule:
+                    container.Children.Add(BuildRule());
+                    break;
+                case MarkdownBlockKind.Quote:
+                    container.Children.Add(BuildQuote(block));
+                    break;
                 default:
                     container.Children.Add(BuildInlineText(block.Text, bold: false, fontSize: 0, topGap: 3));
                     break;
             }
         }
+    }
+
+    // A link. The address rides in the tooltip rather than the text, so the sentence reads as written
+    // - but nothing is opened without a click, and only over http(s): a reply is untrusted input, and
+    // a file:// or a custom scheme in it would be handing an unknown target to the shell.
+    private Inline BuildLink(MarkdownInline run)
+    {
+        bool web = Uri.TryCreate(run.Href, UriKind.Absolute, out Uri? target) &&
+                   (target!.Scheme == Uri.UriSchemeHttp || target.Scheme == Uri.UriSchemeHttps);
+
+        if (!web)
+        {
+            // Not something we will open: show the text, and keep the address visible rather than
+            // silently dropping it.
+            return new Run(run.Text) { ToolTip = run.Href, TextDecorations = TextDecorations.Underline };
+        }
+
+        var link = new Hyperlink(new Run(run.Text))
+        {
+            NavigateUri = target,
+            ToolTip = run.Href,
+            Foreground = Accent,
+        };
+        link.RequestNavigate += (_, e) =>
+        {
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true }); }
+            catch { /* no browser, or the shell refused - not worth interrupting the panel for */ }
+            e.Handled = true;
+        };
+        return link;
+    }
+
+    // A pipe table drawn as a real grid. Claude answers comparison questions with tables constantly,
+    // and as raw pipes they are the least readable thing in the panel. The whole grid scrolls
+    // sideways rather than squeezing columns, so a wide table stays legible in a narrow tool window.
+    private UIElement BuildTable(MarkdownBlock block)
+    {
+        int columns = 0;
+        foreach (IReadOnlyList<string> row in block.Rows) columns = Math.Max(columns, row.Count);
+        if (columns == 0) return BuildInlineText(string.Empty, bold: false, fontSize: 0, topGap: 0);
+
+        var grid = new Grid();
+        for (int c = 0; c < columns; c++)
+        {
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        }
+
+        for (int r = 0; r < block.Rows.Count; r++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            IReadOnlyList<string> row = block.Rows[r];
+            bool header = r == 0;
+
+            for (int c = 0; c < columns; c++)
+            {
+                var cell = new Border
+                {
+                    Padding = new Thickness(9, 4, 9, 4),
+                    BorderThickness = new Thickness(0, 0, c == columns - 1 ? 0 : 1, header ? 1 : 0),
+                    Background = header ? CardFill : Brushes.Transparent,
+                    Child = BuildInlineText(c < row.Count ? row[c] : string.Empty,
+                        bold: header, fontSize: 0, topGap: 0),
+                };
+                cell.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+                Grid.SetRow(cell, r);
+                Grid.SetColumn(cell, c);
+                grid.Children.Add(cell);
+            }
+        }
+
+        var frame = new Border
+        {
+            Child = grid,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+            Margin = new Thickness(0, 6, 0, 6),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        frame.SetResourceReference(Border.BorderBrushProperty, VsBrushes.ToolWindowBorderKey);
+
+        return new ScrollViewer
+        {
+            Content = frame,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+    }
+
+    // A section break. Quiet on purpose: it separates, it should not compete with the text.
+    private UIElement BuildRule()
+    {
+        var line = new Border
+        {
+            Height = 1,
+            Margin = new Thickness(0, 10, 0, 10),
+            Opacity = 0.5,
+        };
+        line.SetResourceReference(Border.BackgroundProperty, VsBrushes.ToolWindowBorderKey);
+        return line;
+    }
+
+    // A quotation, marked by an accent rule down its left edge rather than by a ">" in the text.
+    private UIElement BuildQuote(MarkdownBlock block)
+    {
+        var body = BuildInlineText(block.Text, bold: false, fontSize: 0, topGap: 0);
+        body.Opacity = 0.8;
+
+        var quote = new Border
+        {
+            Child = body,
+            BorderThickness = new Thickness(2, 0, 0, 0),
+            BorderBrush = Accent,
+            Padding = new Thickness(9, 2, 0, 2),
+            Margin = new Thickness(0, 5, 0, 5),
+        };
+        return quote;
     }
 
     // A read-only, horizontally scrolling monospace box - selectable and copyable, so a demo can lift
@@ -1842,6 +1967,12 @@ internal sealed class AgentPanelControl : UserControl
                     // part being pointed at, and in a wall of prose the font alone does not carry it.
                     paragraph.Inlines.Add(new Run(run.Text) { FontFamily = MonoFont, Foreground = Accent });
                     break;
+                case MarkdownInlineKind.Italic:
+                    paragraph.Inlines.Add(new Run(run.Text) { FontStyle = FontStyles.Italic });
+                    break;
+                case MarkdownInlineKind.Link:
+                    paragraph.Inlines.Add(BuildLink(run));
+                    break;
                 default:
                     paragraph.Inlines.Add(new Run(run.Text));
                     break;
@@ -1854,6 +1985,7 @@ internal sealed class AgentPanelControl : UserControl
             IsReadOnly = true,
             IsReadOnlyCaretVisible = false,
             IsTabStop = false,
+            IsDocumentEnabled = true, // so a link inside the text can actually be clicked
             BorderThickness = new Thickness(0),
             Background = Brushes.Transparent,
             Padding = new Thickness(0),
