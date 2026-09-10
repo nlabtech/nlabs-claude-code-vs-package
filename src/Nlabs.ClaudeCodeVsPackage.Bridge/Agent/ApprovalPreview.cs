@@ -138,6 +138,9 @@ public sealed class ApprovalPreview
             case "WebSearch":
                 return AsTarget(null, Str(obj, "query"), "wantsToSearch", inputJson);
 
+            case "openSolution":
+                return AsTarget(Str(obj, "path"), null, "wantsToOpen", inputJson);
+
             default:
                 return Raw(inputJson);
         }

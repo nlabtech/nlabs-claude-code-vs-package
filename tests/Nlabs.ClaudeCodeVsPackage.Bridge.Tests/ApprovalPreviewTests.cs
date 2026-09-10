@@ -158,6 +158,16 @@ public class ApprovalPreviewTests
     }
 
     [Fact]
+    public void Opening_a_solution_names_the_solution()
+    {
+        ApprovalPreview p = ApprovalPreview.Build("openSolution", "{\"path\":\"C:\\\\work\\\\App.slnx\"}");
+
+        Assert.Equal(PreviewKind.Target, p.Kind);
+        Assert.Equal("wantsToOpen", p.TitleKey);
+        Assert.Equal("C:\\work\\App.slnx", p.Target);
+    }
+
+    [Fact]
     public void A_fetch_shows_the_url()
     {
         ApprovalPreview p = ApprovalPreview.Build("WebFetch", "{\"url\":\"https://example.com\"}");

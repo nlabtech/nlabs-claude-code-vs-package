@@ -45,14 +45,20 @@ public static class RiskAssessor
         "getDiagnostics", "getOpenEditors", "getCurrentSelection", "getLatestSelection",
         "getWorkspaceFolders", "checkDocumentDirty", "getSolutionStructure",
         "findSymbols", "findReferences", "gitStatus", "listBreakpoints", "getDebugState", "getCallStack",
+        "goToDefinition",
     };
 
     // Tools that change a file or editor state, but reversibly and visibly.
     private static readonly string[] WriteTools =
     {
         "Write", "Edit", "NotebookEdit", "openDiff", "openFile", "saveDocument", "formatDocument",
-        "close_tab", "closeAllDiffTabs", "addBreakpoint", "removeBreakpoint", "ExitPlanMode",
+        "close_tab", "closeAllDiffTabs", "addBreakpoint", "removeBreakpoint", "clearBreakpoints",
+        "ExitPlanMode",
     };
+
+    // goToDefinition only reads - unless it is also asked to show the result, which moves the editor.
+    private static readonly Regex OpensEditor = new Regex("\"open\"\\s*:\\s*true",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // Tools that hand control to a shell or the wider machine.
     private static readonly string[] ShellTools = { "Bash", "PowerShell", "runTests", "buildSolution", "debugControl" };
@@ -76,6 +82,18 @@ public static class RiskAssessor
         if (Destructive.IsMatch(input))
         {
             return new RiskAssessment(RiskLevel.High, "Looks destructive or hard to undo.");
+        }
+
+        // Opening a solution makes Visual Studio evaluate its projects, and a design-time build runs
+        // whatever MSBuild logic they carry - code execution, whatever the tool happens to be called.
+        if (name == "openSolution")
+        {
+            return new RiskAssessment(RiskLevel.High, "Loads a solution; its project build logic runs.");
+        }
+
+        if (name == "goToDefinition" && OpensEditor.IsMatch(input))
+        {
+            return new RiskAssessment(RiskLevel.Medium, "Changes a file or the editor.");
         }
 
         if (Contains(ShellTools, name))

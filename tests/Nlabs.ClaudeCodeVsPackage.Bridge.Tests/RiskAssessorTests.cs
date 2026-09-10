@@ -24,6 +24,36 @@ public class RiskAssessorTests
     }
 
     [Fact]
+    public void Resolving_a_definition_only_reads()
+    {
+        Assert.Equal(RiskLevel.Low, RiskAssessor.Assess("goToDefinition", "{\"name\":\"Foo\"}").Level);
+    }
+
+    [Fact]
+    public void Showing_a_definition_in_the_editor_changes_the_editor()
+    {
+        // The approval preview is pretty-printed JSON, so the flag arrives with spacing around it.
+        string input = "{\n  \"name\": \"Foo\",\n  \"open\": true\n}";
+
+        Assert.Equal(RiskLevel.Medium, RiskAssessor.Assess("goToDefinition", input).Level);
+    }
+
+    [Fact]
+    public void Opening_a_solution_is_high_risk_because_its_build_logic_runs()
+    {
+        RiskAssessment risk = RiskAssessor.Assess("openSolution", "{\"path\":\"C:\\\\work\\\\App.slnx\"}");
+
+        Assert.Equal(RiskLevel.High, risk.Level);
+        Assert.Contains("build", risk.Reason);
+    }
+
+    [Fact]
+    public void Clearing_breakpoints_changes_debugger_state()
+    {
+        Assert.Equal(RiskLevel.Medium, RiskAssessor.Assess("clearBreakpoints", "{}").Level);
+    }
+
+    [Fact]
     public void A_shell_command_is_high_risk()
     {
         Assert.Equal(RiskLevel.High, RiskAssessor.Assess("Bash", "{\"command\":\"dotnet build\"}").Level);

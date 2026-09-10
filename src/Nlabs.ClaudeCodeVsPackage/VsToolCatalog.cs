@@ -7,6 +7,7 @@ using Microsoft.VisualStudio.LanguageServices;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Threading;
 using Newtonsoft.Json.Linq;
+using Nlabs.ClaudeCodeVsPackage.Bridge.Ide;
 using Nlabs.ClaudeCodeVsPackage.Bridge.Mcp;
 using System;
 using System.Collections.Generic;
@@ -82,8 +83,10 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
             case "buildSolution": return await OnUiAsync(BuildSolution);
             case "runTests": return await RunTestsAsync(args);
             case "getSolutionStructure": return await OnUiAsync(GetSolutionStructure);
+            case "openSolution": return await OnUiAsync(dte => OpenSolution(dte, args));
             case "findSymbols": return await FindSymbolsAsync(args, cancellationToken);
             case "findReferences": return await FindReferencesAsync(args, cancellationToken);
+            case "goToDefinition": return await GoToDefinitionAsync(args, cancellationToken);
             case "formatDocument": return await OnUiAsync(dte => FormatDocument(dte, args));
             case "getDebugState": return await OnUiAsync(GetDebugState);
             case "getCallStack": return await OnUiAsync(GetCallStack);
@@ -91,6 +94,7 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
             case "listBreakpoints": return await OnUiAsync(ListBreakpoints);
             case "addBreakpoint": return await OnUiAsync(dte => AddBreakpoint(dte, args));
             case "removeBreakpoint": return await OnUiAsync(dte => RemoveBreakpoint(dte, args));
+            case "clearBreakpoints": return await OnUiAsync(dte => ClearBreakpoints(dte, args));
             case "debugControl": return await OnUiAsync(dte => DebugControl(dte, args));
             case "gitStatus": return await GitStatusAsync();
 
@@ -113,6 +117,9 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
     private JObject OpenFile(DTE2 dte, JObject args)
     {
         string path = Require(args, "filePath");
+        // With a line range this selects text that getCurrentSelection then returns, so opening a file
+        // is reading it. Held to the workspace and to the permission floor's secret list.
+        EnsureMayOpen(dte, path);
         dte.ItemOperations.OpenFile(path, EnvDTE.Constants.vsViewKindTextView);
 
         if (dte.ActiveDocument?.Selection is TextSelection selection)
@@ -137,6 +144,14 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
         // Native openDiff: propose new_file_contents for a file; wait for the human's verdict.
         string realPath = (string?)args["old_file_path"] ?? (string?)args["new_file_path"]
             ?? throw new ArgumentException("old_file_path is required.");
+
+        // Accepting the diff writes the real file, so it has to sit inside the workspace like any
+        // other. A secret is not refused here: the diff shows its contents to the developer rather
+        // than returning them to the model, and adding a line to a .env is a legitimate edit.
+        await _jtf.SwitchToMainThreadAsync(ct);
+        var dte = await _services.GetServiceAsync(typeof(DTE)) as DTE2
+            ?? throw new InvalidOperationException("Visual Studio automation (DTE) is unavailable.");
+        EnsureMayOpen(dte, realPath, refuseSecrets: false);
         string proposed = (string?)args["new_file_contents"] ?? string.Empty;
         string tabName = (string?)args["tab_name"] ?? Path.GetFileName(realPath);
 
@@ -436,6 +451,174 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
         return new JObject { ["symbols"] = symbols };
     }
 
+    /// <summary>Lines of one declaration returned with it. A whole class would defeat the purpose.</summary>
+    private const int MaxDefinitionLines = 60;
+
+    // Where a symbol is declared, with the declaration's own source. The expensive way to answer
+    // "what is this" is to search for the name and read every file that matches; Roslyn already
+    // knows the answer exactly, and a 30-line method is far cheaper to read than the 800-line file
+    // around it.
+    private async Task<JObject> GoToDefinitionAsync(JObject args, CancellationToken ct)
+    {
+        string? name = (string?)args["name"];
+        string? file = (string?)args["file"];
+        bool open = (bool?)args["open"] ?? false;
+
+        await _jtf.SwitchToMainThreadAsync();
+        var solution = await RoslynSolutionAsync();
+        if (solution == null) throw new InvalidOperationException("No Roslyn workspace.");
+
+        var symbols = new List<ISymbol>();
+        if (!string.IsNullOrWhiteSpace(file))
+        {
+            // At a position, like F12: the symbol used there - not merely one that shares its name.
+            ISymbol? at = await SymbolAtAsync(solution, file!, RequireInt(args, "line"), RequireInt(args, "column"), ct)
+                .ConfigureAwait(false);
+            if (at == null) throw new InvalidOperationException("No symbol at that position.");
+
+            ISymbol target = at is IAliasSymbol alias ? alias.Target : at;
+            // "new Widget()" resolves to a constructor the compiler wrote; the type is what was meant.
+            if (target.IsImplicitlyDeclared && target.ContainingType != null) target = target.ContainingType;
+            symbols.Add(target.OriginalDefinition);
+        }
+        else if (!string.IsNullOrWhiteSpace(name))
+        {
+            foreach (ISymbol found in await SymbolFinder.FindSourceDeclarationsAsync(solution, name!.Trim(), ignoreCase: false, ct)
+                .ConfigureAwait(false))
+            {
+                symbols.Add(found);
+                if (symbols.Count >= 10) break;
+            }
+        }
+        else
+        {
+            throw new ArgumentException("Give a symbol name, or a file with a line and column.");
+        }
+
+        // One entry per declaration - a partial class is declared in several places, and each one is
+        // real. Source rides with the first few only: enough to answer without flooding the context.
+        var definitions = new JArray();
+        foreach (ISymbol symbol in symbols)
+        {
+            if (symbol.DeclaringSyntaxReferences.Length == 0)
+            {
+                // Declared in a referenced assembly. Its location is a package cache under the user
+                // profile - machine detail the answer does not need - so only the assembly is named.
+                definitions.Add(new JObject
+                {
+                    ["symbol"] = symbol.ToDisplayString(),
+                    ["kind"] = symbol.Kind.ToString(),
+                    ["inSource"] = false,
+                    ["assembly"] = symbol.ContainingAssembly?.Name,
+                });
+                continue;
+            }
+
+            foreach (SyntaxReference reference in symbol.DeclaringSyntaxReferences)
+            {
+                if (definitions.Count >= 10) break;
+                definitions.Add(await DefinitionEntryAsync(symbol, reference, withSource: definitions.Count < 3, ct)
+                    .ConfigureAwait(false));
+            }
+        }
+
+        var result = new JObject { ["definitions"] = definitions };
+        JToken? first = definitions.FirstOrDefault(d => (bool?)d["inSource"] == true);
+        if (open && first != null)
+        {
+            result["shown"] = await ShowDefinitionAsync((string)first["file"]!, (int)first["line"]!, (int)first["column"]!, ct);
+        }
+        return result;
+    }
+
+    private static async Task<JObject> DefinitionEntryAsync(ISymbol symbol, SyntaxReference reference, bool withSource, CancellationToken ct)
+    {
+        SyntaxTree tree = reference.SyntaxTree;
+        FileLinePositionSpan span = tree.GetLineSpan(reference.Span, ct);
+        var entry = new JObject
+        {
+            ["symbol"] = symbol.ToDisplayString(),
+            ["kind"] = symbol.Kind.ToString(),
+            ["inSource"] = true,
+            ["file"] = tree.FilePath,
+            ["line"] = span.StartLinePosition.Line + 1,
+            ["column"] = span.StartLinePosition.Character + 1,
+            ["endLine"] = span.EndLinePosition.Line + 1,
+        };
+        if (!withSource) return entry;
+
+        var text = await tree.GetTextAsync(ct).ConfigureAwait(false);
+        int firstLine = span.StartLinePosition.Line;
+        int lastLine = span.EndLinePosition.Line;
+
+        // The doc comment comes along: what a member is for is usually the first thing wanted.
+        while (firstLine > 0 && IsDocCommentLine(text.Lines[firstLine - 1].ToString())) firstLine--;
+
+        int total = lastLine - firstLine + 1;
+        int shown = Math.Min(total, MaxDefinitionLines);
+        var source = new StringBuilder();
+        for (int i = 0; i < shown; i++) source.Append(text.Lines[firstLine + i].ToString()).Append('\n');
+
+        entry["source"] = source.ToString().TrimEnd();
+        if (shown < total)
+        {
+            entry["truncated"] = true;
+            entry["totalLines"] = total;
+        }
+        return entry;
+    }
+
+    private static bool IsDocCommentLine(string line)
+    {
+        string t = line.TrimStart();
+        return t.StartsWith("///", StringComparison.Ordinal) || t.StartsWith("'''", StringComparison.Ordinal);
+    }
+
+    // Moves the editor to a declaration the way F12 does, for when the developer wants to look too.
+    // Refused like any other open when the file sits outside the workspace; the answer still stands.
+    private async Task<bool> ShowDefinitionAsync(string file, int line, int column, CancellationToken ct)
+    {
+        await _jtf.SwitchToMainThreadAsync(ct);
+        if (!(await _services.GetServiceAsync(typeof(DTE)) is DTE2 dte)) return false;
+
+        try { EnsureMayOpen(dte, file); }
+        catch (InvalidOperationException) { return false; }
+
+        dte.ItemOperations.OpenFile(file, EnvDTE.Constants.vsViewKindTextView);
+        if (dte.ActiveDocument?.Selection is TextSelection selection)
+        {
+            selection.MoveToLineAndOffset(line, Math.Max(1, column), false);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// The symbol at a 1-based line and column, resolved the way the editor does it: what a name
+    /// refers to where it is used, what is declared where it is declared, and the likeliest candidate
+    /// when overload resolution could not settle on one.
+    /// </summary>
+    private static async Task<ISymbol?> SymbolAtAsync(Microsoft.CodeAnalysis.Solution solution, string file, int line, int column, CancellationToken ct)
+    {
+        var documentId = solution.GetDocumentIdsWithFilePath(file).FirstOrDefault();
+        var document = documentId != null ? solution.GetDocument(documentId) : null;
+        if (document == null) throw new InvalidOperationException("File is not part of the solution.");
+
+        var text = await document.GetTextAsync(ct).ConfigureAwait(false);
+        if (line < 1 || line > text.Lines.Count) throw new ArgumentException("Line out of range.");
+        var lineSpan = text.Lines[line - 1];
+        int position = Math.Min(lineSpan.End, lineSpan.Start + Math.Max(0, column - 1));
+
+        var semanticModel = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
+        var root = await document.GetSyntaxRootAsync(ct).ConfigureAwait(false);
+        if (semanticModel == null || root == null) throw new InvalidOperationException("No semantic model.");
+
+        var node = root.FindToken(position).Parent;
+        if (node == null) return null;
+
+        var info = semanticModel.GetSymbolInfo(node, ct);
+        return info.Symbol ?? info.CandidateSymbols.FirstOrDefault() ?? semanticModel.GetDeclaredSymbol(node, ct);
+    }
+
     private async Task<JObject> FindReferencesAsync(JObject args, CancellationToken ct)
     {
         string file = Require(args, "file");
@@ -446,22 +629,7 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
         var solution = await RoslynSolutionAsync();
         if (solution == null) throw new InvalidOperationException("No Roslyn workspace.");
 
-        var documentId = solution.GetDocumentIdsWithFilePath(file).FirstOrDefault();
-        var document = documentId != null ? solution.GetDocument(documentId) : null;
-        if (document == null) throw new InvalidOperationException("File is not part of the solution.");
-
-        var text = await document.GetTextAsync(ct).ConfigureAwait(false);
-        if (line < 1 || line > text.Lines.Count) throw new ArgumentException("Line out of range.");
-        int position = text.Lines[line - 1].Start + Math.Max(0, column - 1);
-
-        var semanticModel = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
-        var root = await document.GetSyntaxRootAsync(ct).ConfigureAwait(false);
-        if (semanticModel == null || root == null) throw new InvalidOperationException("No semantic model.");
-
-        var node = root.FindToken(position).Parent;
-        ISymbol? symbol = node == null
-            ? null
-            : semanticModel.GetSymbolInfo(node).Symbol ?? semanticModel.GetDeclaredSymbol(node);
+        ISymbol? symbol = await SymbolAtAsync(solution, file, line, column, ct).ConfigureAwait(false);
         if (symbol == null) throw new InvalidOperationException("No symbol at that position.");
 
         var references = new JArray();
@@ -488,6 +656,8 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
         string? path = (string?)args["filePath"];
         if (!string.IsNullOrEmpty(path))
         {
+            // Formatting rewrites the file, and opening it makes it the active document.
+            EnsureMayOpen(dte, path!);
             dte.ItemOperations.OpenFile(path, EnvDTE.Constants.vsViewKindTextView);
         }
         dte.ExecuteCommand("Edit.FormatDocument");
@@ -579,6 +749,90 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
         return new JObject { ["removed"] = false };
     }
 
+    private JObject ClearBreakpoints(DTE2 dte, JObject args)
+    {
+        string? file = (string?)args["file"];
+
+        // Collected first: deleting from the live collection while walking it is not safe.
+        var doomed = new List<Breakpoint>();
+        foreach (Breakpoint breakpoint in dte.Debugger.Breakpoints)
+        {
+            if (string.IsNullOrEmpty(file) || string.Equals(breakpoint.File, file, StringComparison.OrdinalIgnoreCase))
+            {
+                doomed.Add(breakpoint);
+            }
+        }
+
+        foreach (Breakpoint breakpoint in doomed) breakpoint.Delete();
+        return new JObject { ["removed"] = doomed.Count };
+    }
+
+    // Opens a solution so the build, diagnostics and symbol tools work on it - typically one Claude
+    // has just created. Loading a solution evaluates its projects, and a design-time build runs their
+    // MSBuild logic, so only a .sln or .slnx that exists inside the workspace is opened.
+    private JObject OpenSolution(DTE2 dte, JObject args)
+    {
+        string? path = PathScope.Normalize(Require(args, "path"));
+        if (path == null) throw new ArgumentException("path must be a full path to a .sln or .slnx file.");
+
+        string extension = Path.GetExtension(path);
+        if (!extension.Equals(".sln", StringComparison.OrdinalIgnoreCase) &&
+            !extension.Equals(".slnx", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Only .sln and .slnx files can be opened.");
+        }
+        if (!File.Exists(path)) throw new ArgumentException("There is no solution file at that path.");
+        EnsureMayOpen(dte, path);
+
+        Solution? current = dte.Solution;
+        bool isOpen = current != null && current.IsOpen && !string.IsNullOrEmpty(current.FullName);
+        if (isOpen && string.Equals(Path.GetFullPath(current!.FullName), path, StringComparison.OrdinalIgnoreCase))
+        {
+            return new JObject { ["opened"] = true, ["alreadyOpen"] = true, ["path"] = path };
+        }
+
+        // Opening another solution closes this one. With unsaved changes that means either a save
+        // prompt in the middle of a tool call, which nobody is there to answer, or lost work.
+        if (isOpen && HasUnsavedChanges(dte))
+        {
+            throw new InvalidOperationException(
+                "The open solution has unsaved changes. Save or close it first - opening another would close it.");
+        }
+
+        if (!(Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(Microsoft.VisualStudio.Shell.Interop.SVsSolution))
+                is Microsoft.VisualStudio.Shell.Interop.IVsSolution solutionService))
+        {
+            throw new InvalidOperationException("The solution service is unavailable.");
+        }
+
+        // Silent: a dialog in the middle of a tool call has nobody to answer it.
+        int hr = solutionService.OpenSolutionFile(
+            (uint)Microsoft.VisualStudio.Shell.Interop.__VSSLNOPENOPTIONS.SLNOPENOPT_Silent, path);
+        if (Microsoft.VisualStudio.ErrorHandler.Failed(hr))
+        {
+            throw new InvalidOperationException("Visual Studio could not open the solution.");
+        }
+
+        return new JObject { ["opened"] = true, ["path"] = path };
+    }
+
+    private static bool HasUnsavedChanges(DTE2 dte)
+    {
+        try
+        {
+            if (!dte.Solution.Saved) return true;
+            foreach (Document document in dte.Documents)
+            {
+                if (!document.Saved) return true;
+            }
+        }
+        catch
+        {
+            // When it cannot be told, assume there is something to lose.
+            return true;
+        }
+        return false;
+    }
     private JObject DebugControl(DTE2 dte, JObject args)
     {
         string action = Require(args, "action");
@@ -608,6 +862,66 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
 
     // ============================ helpers ============================
 
+    // --- workspace scope ---
+
+    /// <summary>
+    /// Refuses a path an IDE tool should not open: outside the workspace, or - unless the file is only
+    /// being shown to the developer - one the permission floor names as a secret. These messages reach
+    /// the model as the tool's error, so they say what to do instead, and nothing about the machine.
+    /// </summary>
+    private static void EnsureMayOpen(DTE2 dte, string path, bool refuseSecrets = true)
+    {
+        switch (PathScope.Check(path, ScopeRoots(dte), refuseSecrets))
+        {
+            case PathVerdict.Allowed:
+                return;
+            case PathVerdict.Secret:
+                throw new InvalidOperationException(
+                    "That file is on the permission floor's secret list (.env, keys), so an IDE tool does not open it.");
+            case PathVerdict.Invalid:
+                throw new InvalidOperationException("That is not a full local path.");
+            default:
+                throw new InvalidOperationException(
+                    "That path is outside the open solution and the panel's working folder, so it is not opened. " +
+                    "Open the solution it belongs to, or choose its folder in the Claude Code panel.");
+        }
+    }
+
+    /// <summary>
+    /// What counts as the workspace: the open solution's folder, each project's folder (a project can
+    /// live outside the solution's), and the folder chosen in the panel. Top-level projects only; one
+    /// nested in a solution folder is still covered when it sits under the solution, as it nearly
+    /// always does.
+    /// </summary>
+    private static List<string> ScopeRoots(DTE2 dte)
+    {
+        var roots = new List<string>();
+        try
+        {
+            Solution? solution = dte.Solution;
+            if (solution != null && solution.IsOpen && !string.IsNullOrEmpty(solution.FullName))
+            {
+                string? dir = Path.GetDirectoryName(solution.FullName);
+                if (!string.IsNullOrEmpty(dir)) roots.Add(dir!);
+
+                foreach (Project project in solution.Projects)
+                {
+                    try
+                    {
+                        if (string.IsNullOrEmpty(project.FullName)) continue;
+                        string? projectDir = Path.GetDirectoryName(project.FullName);
+                        if (!string.IsNullOrEmpty(projectDir)) roots.Add(projectDir!);
+                    }
+                    catch { /* an unloaded project has no path to give */ }
+                }
+            }
+        }
+        catch { /* no solution, or DTE is busy: the panel's folder alone is the scope */ }
+
+        string? chosen = WorkspaceScope.ChosenFolder;
+        if (!string.IsNullOrEmpty(chosen)) roots.Add(chosen!);
+        return roots;
+    }
     private async Task<Microsoft.CodeAnalysis.Solution?> RoslynSolutionAsync()
     {
         var componentModel = await _services.GetServiceAsync(typeof(SComponentModel)) as IComponentModel;
@@ -823,6 +1137,8 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
             Tool("runTests", "Run the solution's tests with `dotnet test`, optionally filtered.",
                 Schema(new JObject { ["filter"] = P("string", "Optional dotnet test --filter expression.") })),
             Tool("getSolutionStructure", "List the solution's projects and their files.", Schema(new JObject())),
+            Tool("openSolution", "Open a .sln or .slnx solution in Visual Studio so the build, diagnostics and symbol tools work on it - typically one you have just created. Only a solution inside the open solution's folder or the panel's working folder is opened, and not while the current solution has unsaved changes.",
+                Schema(new JObject { ["path"] = P("string", "Absolute path of the .sln or .slnx file.") }, "path")),
             Tool("findSymbols", "Find source symbols across the solution by name (Roslyn).",
                 Schema(new JObject { ["query"] = P("string", "Symbol name to search for.") }, "query")),
             Tool("findReferences", "Find all references to the symbol at a file position (Roslyn).",
@@ -832,6 +1148,15 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
                     ["line"] = P("number", "1-based line of the symbol."),
                     ["column"] = P("number", "1-based column of the symbol."),
                 }, "file", "line", "column")),
+            Tool("goToDefinition", "Find where a symbol is declared in this solution and return that declaration's source with its doc comment, so a definition can be read without reading the whole file. Give a symbol name, or a file with line and column to resolve the symbol used at that position (like F12). Set open to true to also show it in the editor.",
+                Schema(new JObject
+                {
+                    ["name"] = P("string", "Symbol name, when searching by name."),
+                    ["file"] = P("string", "Absolute path of a file in the solution, when resolving a position."),
+                    ["line"] = P("number", "1-based line of the position."),
+                    ["column"] = P("number", "1-based column of the position."),
+                    ["open"] = P("boolean", "Also move the editor to the declaration. Defaults to false."),
+                })),
             Tool("formatDocument", "Format a document with Visual Studio's formatter.",
                 Schema(new JObject { ["filePath"] = P("string", "Optional path; defaults to the active document.") })),
             Tool("getDebugState", "Report whether the debugger is in break mode and where.", Schema(new JObject())),
@@ -851,6 +1176,8 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
                     ["file"] = P("string", "Absolute path of the file."),
                     ["line"] = P("number", "1-based line of the breakpoint."),
                 }, "file", "line")),
+            Tool("clearBreakpoints", "Remove all breakpoints, or only those in one file.",
+                Schema(new JObject { ["file"] = P("string", "Optional absolute path; only this file's breakpoints are removed.") })),
             Tool("debugControl", "Control the debugger: continue, stepOver, stepInto, stepOut, break, stop.",
                 Schema(new JObject { ["action"] = P("string", "One of continue|stepOver|stepInto|stepOut|break|stop.") }, "action")),
             Tool("gitStatus", "Return `git status` for the solution's repository.", Schema(new JObject())),

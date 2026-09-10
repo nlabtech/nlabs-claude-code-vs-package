@@ -190,6 +190,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["wantsToEdit"] = "wants to change", ["wantsToCreate"] = "wants to write",
                 ["wantsToRead"] = "wants to read", ["wantsToSearch"] = "wants to search",
                 ["wantsToFetch"] = "wants to fetch", ["diffHidden"] = "{0} unchanged lines",
+                ["wantsToOpen"] = "wants to open",
                 ["edit"] = "Edit", ["accent"] = "Accent", ["attachHint"] = "Attach an image",
                 ["tokens"] = "tokens", ["defaultEffort"] = "Effort: default",
                 ["pickFolder"] = "Pick folder", ["folderSet"] = "Folder set - your next message starts here.",
@@ -289,6 +290,7 @@ internal sealed class AgentPanelControl : UserControl
                 ["wantsToEdit"] = "degistirmek istiyor", ["wantsToCreate"] = "yazmak istiyor",
                 ["wantsToRead"] = "okumak istiyor", ["wantsToSearch"] = "aramak istiyor",
                 ["wantsToFetch"] = "getirmek istiyor", ["diffHidden"] = "{0} degismeyen satir",
+                ["wantsToOpen"] = "acmak istiyor",
                 ["edit"] = "Duzenle", ["accent"] = "Vurgu", ["attachHint"] = "Gorsel ekle",
                 ["tokens"] = "token", ["defaultEffort"] = "Efor: varsayilan",
                 ["pickFolder"] = "Klasor sec", ["folderSet"] = "Klasor secildi - sonraki mesajin burada baslar.",
@@ -3402,6 +3404,8 @@ internal sealed class AgentPanelControl : UserControl
             if (dlg.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
 
             _workingFolder = dlg.SelectedPath;
+            // The IDE tools scope file access to the workspace; with no solution open, this folder is it.
+            WorkspaceScope.ChosenFolder = _workingFolder;
             _workspaceKey = _workingFolder;
             _session?.Dispose();
             _session = null;

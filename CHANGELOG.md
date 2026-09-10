@@ -21,6 +21,13 @@ All notable changes to this extension. Versions follow the manifest.
   roughly what it weighs and that transcription then happens locally, and shows the
   download's progress rather than sitting silent for minutes.
 - Built packages are copied to `artifacts/`, stamped with version and configuration.
+- **`goToDefinition`** - resolves a symbol by name, or at a position the way F12 does, and
+  returns the declaration's own source, so Claude can read a definition without reading the
+  whole file it lives in. Asked to, it also shows it in the editor.
+- **`openSolution`** - opens a `.sln` or `.slnx`, so the build, diagnostics and symbol tools
+  work on a solution Claude has just created. Only inside the workspace, and never over a
+  solution with unsaved changes.
+- **`clearBreakpoints`** - removes every breakpoint, or only those in one file.
 
 ### Fixed
 
@@ -37,6 +44,12 @@ All notable changes to this extension. Versions follow the manifest.
 
 ### Security
 
+- **IDE tools stay inside the workspace, and away from secrets.** The IDE tools do not pass
+  through the approval step, and two of them together - opening a file with a line range
+  selected, then reading the selection - could read any file on the machine, including the
+  `.env` and key files the permission floor denies to the CLI's own `Read`. Tools that open
+  a file now refuse anything outside the open solution, its projects and the panel's working
+  folder, and anything the floor names as a secret.
 - Release builds no longer carry the path of the machine that built them. The compiler
   writes the symbol file's full path into the assembly by default, readable by anyone
   who downloads the extension; Release now emits no symbol file at all.
