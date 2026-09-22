@@ -1,4 +1,4 @@
-using EnvDTE;
+﻿using EnvDTE;
 using EnvDTE80;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
@@ -58,6 +58,13 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
     /// <summary>Keeps the lock file's workspace folders in step with the open solution.</summary>
     private SolutionLockWatcher? _solutionWatcher;
 
+    /// <summary>
+    /// Pushes the editor selection to Claude Code as it moves. It outlives a bridge restart - it
+    /// reads whichever bridge is current rather than holding one - so it is started once, with the
+    /// package, and stopped with it.
+    /// </summary>
+    private SelectionWatcher? _selectionWatcher;
+
     /// <summary>The token the current lock file was written with; reused when it is rewritten.</summary>
     private string _lockedToken = string.Empty;
 
@@ -88,6 +95,11 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
         {
             StartBridge();
         }
+
+        // Best effort: if the editor services are not there to subscribe to, the bridge still
+        // answers everything it is asked - it just stops volunteering where the developer is.
+        try { _selectionWatcher = new SelectionWatcher(this, JoinableTaskFactory, () => _bridge); }
+        catch { _selectionWatcher = null; }
     }
 
     /// <summary>Starts the bridge, wires it to the MCP handler, and writes the discovery lock file.</summary>
@@ -280,6 +292,8 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
     {
         if (disposing)
         {
+            _selectionWatcher?.Dispose();
+            _selectionWatcher = null;
             StopBridge();
         }
 

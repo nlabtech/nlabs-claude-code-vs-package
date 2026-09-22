@@ -1,4 +1,4 @@
-using EnvDTE;
+﻿using EnvDTE;
 using EnvDTE80;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.FindSymbols;
@@ -871,7 +871,7 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
     /// </summary>
     private static void EnsureMayOpen(DTE2 dte, string path, bool refuseSecrets = true)
     {
-        switch (PathScope.Check(path, ScopeRoots(dte), refuseSecrets))
+        switch (PathScope.Check(path, WorkspaceRoots.Collect(dte), refuseSecrets))
         {
             case PathVerdict.Allowed:
                 return;
@@ -887,41 +887,6 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
         }
     }
 
-    /// <summary>
-    /// What counts as the workspace: the open solution's folder, each project's folder (a project can
-    /// live outside the solution's), and the folder chosen in the panel. Top-level projects only; one
-    /// nested in a solution folder is still covered when it sits under the solution, as it nearly
-    /// always does.
-    /// </summary>
-    private static List<string> ScopeRoots(DTE2 dte)
-    {
-        var roots = new List<string>();
-        try
-        {
-            Solution? solution = dte.Solution;
-            if (solution != null && solution.IsOpen && !string.IsNullOrEmpty(solution.FullName))
-            {
-                string? dir = Path.GetDirectoryName(solution.FullName);
-                if (!string.IsNullOrEmpty(dir)) roots.Add(dir!);
-
-                foreach (Project project in solution.Projects)
-                {
-                    try
-                    {
-                        if (string.IsNullOrEmpty(project.FullName)) continue;
-                        string? projectDir = Path.GetDirectoryName(project.FullName);
-                        if (!string.IsNullOrEmpty(projectDir)) roots.Add(projectDir!);
-                    }
-                    catch { /* an unloaded project has no path to give */ }
-                }
-            }
-        }
-        catch { /* no solution, or DTE is busy: the panel's folder alone is the scope */ }
-
-        string? chosen = WorkspaceScope.ChosenFolder;
-        if (!string.IsNullOrEmpty(chosen)) roots.Add(chosen!);
-        return roots;
-    }
     private async Task<Microsoft.CodeAnalysis.Solution?> RoslynSolutionAsync()
     {
         var componentModel = await _services.GetServiceAsync(typeof(SComponentModel)) as IComponentModel;
