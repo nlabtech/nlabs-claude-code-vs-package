@@ -2,6 +2,55 @@
 
 All notable changes to this extension. Versions follow the manifest.
 
+## 0.3.0
+
+### Added
+
+- **The IDE speaks, instead of only answering.** The bridge could describe the selection when
+  asked and never mentioned it otherwise, so asked what the developer was looking at, the
+  model scanned the file system and guessed. The editor now pushes `selection_changed` as
+  the developer moves: which view has focus comes from Visual Studio's text manager over a
+  COM connection point, and the selection inside it from the editor's own WPF view, which
+  reports the span rather than only the caret's line. Moving the caret fires on every
+  keystroke, so pushes are coalesced and an unchanged selection is dropped.
+- **The panel is the IDE's client.** It runs inside Visual Studio and could see none of it:
+  started without `--ide`, it never connected to the bridge sitting in the same process, so
+  the Visual Studio tools were not on its table and no push ever reached it. Everything the
+  extension offers belonged to whoever had typed `/ide` in a terminal - the one place the
+  extension is not. The bridge still takes one client at a time; if a terminal holds it, the
+  panel carries on without the editor's half rather than fighting over it.
+- **A tool's description carries the state the agent cannot see.** `openDiff` - the only tool
+  that proposes a change, and so the only one where the nudge is worth its noise - now says
+  how many compile errors are standing in the way. `initialize` had advertised
+  `tools.listChanged` while nothing ever sent the notification, which meant the client listed
+  the tools once at connect and kept that copy; the count is taken where the error list is
+  read anyway, and the client is told to look again only when the number moves.
+- **A definition of done.** Every session is started with an appended system prompt about the
+  failures that compile and still fall over - a model change with no migration, a service
+  nobody registered, a package missing from the project that uses it, an endpoint never
+  mapped - and is asked to close by naming what it did not verify. Running inside the IDE is
+  what makes that fair: the build, the tests and the diagnostics are one tool call away.
+
+### Security
+
+- **The secret list named four files, and it is the list two doors share.** `PathScope`
+  derives what an IDE tool may open from the permission floor's own `Read` rules, so every
+  name missing from it was a file the CLI's `Read` would fetch and an IDE tool would open: a
+  private key that is not `id_rsa`, a `.pfx`, a `.npmrc`, a .NET user-secrets file. Naming
+  them in one place closes both.
+- **`saveDocument` and `checkDocumentDirty` skipped the workspace check.** That a document has
+  to be open already is not a scope rule - a developer opens files from all over the machine -
+  and saving writes.
+- **The panel stopped leaving its temp files behind.** A settings file was written per session
+  start and never removed, each carrying the permission floor and the path of a script the CLI
+  is told to execute, as was the hook script itself.
+
+### Documentation
+
+- The readme described twenty-five of the twenty-eight tools that exist, and gave the panel -
+  the approval cards and the floor beneath them, undo, the slash menu, dictation, usage, the
+  settings page - a single paragraph saying you pick a model and type.
+
 ## 0.2.0
 
 ### Added
