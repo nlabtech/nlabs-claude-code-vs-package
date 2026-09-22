@@ -126,6 +126,11 @@ file Claude created is left for you to remove.
 - **Selectors**, sitting next to Send: model (default, or the latest Opus / Sonnet / Haiku /
   Fable), permission mode (ask each time / accept edits / plan / bypass) and reasoning effort
   (low / medium / high / xhigh / max).
+- **A definition of done.** Every session is started with an appended system prompt about the
+  failures that build cleanly and still fall over - a missing migration, an unregistered service,
+  a package the using project does not reference - and is asked to close by naming what it did
+  not verify. Running inside the IDE is what makes that fair: the build, the tests and the
+  diagnostics are all one tool call away.
 - **Usage.** How full the 5-hour and 7-day windows are, and when they reset.
 - **Conversations persist.** Each one keeps its session id, so switching back resumes it
   (`--resume`); they survive restarting Visual Studio.
