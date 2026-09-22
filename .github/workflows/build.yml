@@ -1,0 +1,69 @@
+name: build
+
+# Two jobs, because they answer different questions and fail for different reasons.
+#
+# `tests` needs no Visual Studio: the bridge core - the handshake, the token, the path rules,
+# the permission floor - is plain .NET on purpose, so the security logic is checked on every
+# push in seconds. `package` proves the VSIX still builds with the VSSDK toolchain, which is
+# the slow half and the one that breaks when a toolchain moves underneath us.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Bridge core tests
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore
+        run: dotnet restore tests/Nlabs.ClaudeCodeVsPackage.Bridge.Tests/Nlabs.ClaudeCodeVsPackage.Bridge.Tests.csproj
+
+      - name: Test
+        run: >
+          dotnet test tests/Nlabs.ClaudeCodeVsPackage.Bridge.Tests/Nlabs.ClaudeCodeVsPackage.Bridge.Tests.csproj
+          --configuration Release
+          --no-restore
+          --logger "trx;LogFileName=tests.trx"
+          --results-directory TestResults
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+          retention-days: 14
+
+  package:
+    name: VSIX
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      # The package project, not the solution: it pulls in the bridge through its project
+      # reference, and it does not depend on the runner's msbuild understanding .slnx.
+      - name: Restore
+        run: msbuild src/Nlabs.ClaudeCodeVsPackage/Nlabs.ClaudeCodeVsPackage.csproj -t:Restore -p:Configuration=Release
+
+      - name: Build
+        run: msbuild src/Nlabs.ClaudeCodeVsPackage/Nlabs.ClaudeCodeVsPackage.csproj -p:Configuration=Release -m -v:minimal
+
+      - name: Keep the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: artifacts/*.vsix
+          retention-days: 30

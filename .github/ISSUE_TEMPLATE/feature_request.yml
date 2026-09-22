@@ -1,0 +1,32 @@
+name: Idea
+description: Something the extension should be able to do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is built one step at a time, in public, and each step ships with a post - so an idea
+        may sit for a while before its turn comes. Filing it still helps: it is how the order gets
+        decided.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you were trying to do
+      description: >
+        The situation, not the solution. What you wanted to get done, and what stopped you or
+        made it slower than it should have been.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: If you already have a shape in mind, describe it. If not, leave it empty.
+
+  - type: textarea
+    id: today
+    attributes:
+      label: How you work around it today
+      description: Often the workaround says more about the right fix than the idea does.

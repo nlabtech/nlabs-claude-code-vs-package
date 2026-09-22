@@ -1,0 +1,75 @@
+name: Bug report
+description: Something did not do what it should have
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a security problem instead? Please do not file it here - report it privately through
+        [Report a vulnerability](https://github.com/nlabtech/nlabs-claude-code-vs-package/security/advisories/new).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you asked for, what the extension did, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to get there
+      placeholder: |
+        1. Open a solution
+        2. Tools > Claude Code (nLabtech) > Open Claude Panel
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: extension-version
+    attributes:
+      label: Extension version
+      description: Extensions > Manage Extensions > Installed.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: vs-version
+    attributes:
+      label: Visual Studio version
+      description: Help > About Microsoft Visual Studio.
+      placeholder: "Visual Studio 2022 17.14.4"
+    validations:
+      required: true
+
+  - type: input
+    id: cli-version
+    attributes:
+      label: Claude CLI version
+      description: Run `claude --version`. Most breakage here follows a CLI version.
+      placeholder: "2.1.278"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options:
+        - The agentic panel
+        - A terminal connected with /ide
+        - Both
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: >
+        A screenshot of the panel, or the text of an error. Please redact paths, tokens and
+        anything else you would not post publicly - this issue is public.

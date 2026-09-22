@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/nlabtech/nlabs-claude-code-vs-package/security/advisories/new
+    about: Report it privately here, not as a public issue.
+  - name: The series this repository grew from
+    url: https://www.linkedin.com/in/turkmvc/
+    about: Each step shipped with a post; the matching commit holds the code it discusses.
