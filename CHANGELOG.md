@@ -2,6 +2,21 @@
 
 All notable changes to this extension. Versions follow the manifest.
 
+## 0.4.0
+
+### Added
+
+- **Every tool reaches the model, not just the one the native path allows.** Connected with
+  `/ide`, Claude Code surfaces only the IDE tools it already knows - `getDiagnostics`, and
+  `openDiff` through the edit flow - so the Roslyn, build, test and debugger tools this extension
+  adds were advertised over the socket and then never listed to the model. The same protocol is
+  now offered a second way, over a loopback **HTTP MCP endpoint**, where every entry in
+  `tools/list` becomes callable. The panel wires it into its own session automatically with
+  `--mcp-config`; a terminal adds it once with `claude mcp add`. Tools arrive under an `mcp__vs__`
+  name there, and the list-changed notification is pushed over SSE the way the socket path pushes
+  it. Same posture as the bridge: loopback only, a per-session bearer token, a one-megabyte
+  ceiling, nothing logged.
+
 ## 0.3.0
 
 ### Added

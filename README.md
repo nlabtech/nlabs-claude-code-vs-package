@@ -12,22 +12,29 @@ subscription.
 
 ## How it works
 
-The extension is discovered as a **native IDE**. It does not add an MCP server and there is
-no `claude mcp add` step - instead it advertises itself the way Claude Code's own IDE
-integrations do, and the CLI connects with `/ide`.
+The extension reaches Claude Code two ways, because one alone is not enough.
 
 ```
-Claude Code  ──/ide──▶  ~/.claude/ide/<port>.lock  ──WebSocket 127.0.0.1 (MCP)──▶  VS extension  ──▶  Visual Studio
+                    ┌─ /ide  ──▶  ~/.claude/ide/<port>.lock  ──WebSocket──┐
+Claude Code  ───────┤                                                     ├──▶  VS extension  ──▶  Visual Studio
+                    └─ MCP  ──▶  claude mcp add / --mcp-config  ──HTTP────┘
 ```
 
-- On load (with a solution open) the extension starts a loopback WebSocket bridge and writes a
-  discovery **lock file** to `~/.claude/ide/<port>.lock` - the port, a session token, this
-  process id and the open workspace folders. Nothing about the machine, account or
-  subscription is written.
-- `claude` finds that file, connects over the socket and speaks the **Model Context Protocol**
-  directly. Because the extension is a first-class `/ide` connection, its tools appear to the
-  model **without an `mcp__` prefix** - `openDiff`, `getDiagnostics`, `openFile` resolve to
-  Visual Studio.
+- **The native `/ide` path** is what makes the extension a first-class IDE ("Connected to Visual
+  Studio"), and it carries the things only a native connection can: the selection you are pointing
+  at, and a diff you approve. On load (with a solution open) the extension writes a discovery
+  **lock file** to `~/.claude/ide/<port>.lock` - the port, a session token, this process id and the
+  open workspace folders, and nothing about the machine, account or subscription - and `claude`
+  finds it with `/ide`. But this path has a fixed vocabulary: Claude Code surfaces only the IDE
+  tools it already knows (`getDiagnostics`, and `openDiff` through the edit flow). The Roslyn,
+  build, test and debugger tools below do not reach the model over it.
+- **The MCP path** carries those. The same protocol is served a second way over a loopback HTTP
+  endpoint, a standard MCP server with no fixed vocabulary - so every tool becomes callable, under
+  an `mcp__vs__` name. **The panel wires this in automatically** (`--mcp-config`, per session, no
+  step for you). In a terminal you add it once with
+  `claude mcp add --transport http vs <url> --header "Authorization: Bearer <token>"`; the
+  `Tools > Claude Code (nLabtech) > Restart Local Bridge` dialog shows the current command, since
+  the url and token rotate each time Visual Studio starts.
 - **Bridge core** (`Nlabs.ClaudeCodeVsPackage.Bridge`): the WebSocket server, the native
   handshake, the hand-written MCP protocol and the `claude -p` stream-json engine - all with
   zero dependency on Visual Studio, so they are unit-tested without opening VS.
@@ -38,7 +45,9 @@ Claude Code  ──/ide──▶  ~/.claude/ide/<port>.lock  ──WebSocket 127
 
 The built-in IDE tools are matched by name and shape, so Visual Studio answers them exactly as
 Claude Code expects. Beyond them sit Visual Studio's own edge - build, tests, the debugger and
-Roslyn - capabilities the standard IDE bridge does not carry.
+Roslyn - capabilities the standard IDE bridge does not carry. All of them reach the model over the
+MCP endpoint (the panel, or `claude mcp add`); the native `/ide` path lists only `getDiagnostics`
+and drives `openDiff`, which is why the panel uses both.
 
 | Group | Tools |
 |-------|-------|
@@ -157,9 +166,12 @@ with your own subscription).
 1. **Build & install the extension.** Open `Nlabs.ClaudeCodeVsPackage.slnx`, build, and press
    F5 to launch it in the Experimental instance (or install the built `.vsix`).
 2. **Open a solution.** The bridge starts and the discovery lock file is written automatically.
-3. **Connect.** In a terminal, run `claude`, then `/ide` - pick **Visual Studio**. Now ask
-   Claude to read diagnostics, propose a diff, set a breakpoint, run the tests, and so on.
-4. **Or use the panel.** `Tools ▸ Claude Code (nLabtech) ▸ Open Claude Panel`.
+3. **Use the panel** for the full toolset: `Tools ▸ Claude Code (nLabtech) ▸ Open Claude Panel`.
+   It connects with `/ide` and wires the MCP endpoint itself, so every tool - diagnostics, a
+   proposed diff, a breakpoint, the tests - is on the table with no further step.
+4. **Or a terminal.** Run `claude`, then `/ide` and pick **Visual Studio**; that alone gives
+   diagnostics and diffs. For the Roslyn, build, test and debugger tools too, also run the
+   `claude mcp add` line the **Restart Local Bridge** dialog prints.
 
 `Tools ▸ Claude Code (nLabtech) ▸ Restart Local Bridge` restarts the bridge if you need it.
 

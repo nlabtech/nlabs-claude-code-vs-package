@@ -11,8 +11,9 @@ namespace Nlabs.ClaudeCodeVsPackage.Bridge.Ide;
 /// Claude Code discovers a running IDE by scanning <c>~/.claude/ide</c> for a
 /// <c>&lt;port&gt;.lock</c> file describing a local endpoint; the CLI's <c>/ide</c> command
 /// connects to that port. Writing this file is what makes the extension appear as a
-/// first-class IDE ("Connected to Visual Studio") instead of a bolted-on tool server -
-/// no <c>claude mcp add</c>, and the tools are not namespaced behind an <c>mcp__</c> prefix.
+/// first-class IDE ("Connected to Visual Studio"). This path carries what only a native
+/// connection can - the selection push and the diff - but Claude Code lists only its own
+/// known IDE tools over it; the rest reach the model through the HTTP MCP endpoint instead.
 ///
 /// The directory is injectable so the behaviour can be unit-tested without touching the
 /// real home folder. The JSON is written by hand to keep this core free of dependencies.

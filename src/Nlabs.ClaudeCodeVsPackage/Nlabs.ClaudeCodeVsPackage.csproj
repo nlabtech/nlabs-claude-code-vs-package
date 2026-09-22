@@ -33,7 +33,7 @@
       Version/FileVersion DO move with each release (this is what the manifest and the
       file properties show), so you still get a real, human-meaningful version number.
     -->
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>$(Version).0</FileVersion>
   </PropertyGroup>
