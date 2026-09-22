@@ -174,12 +174,12 @@ public class CliStreamProtocolTests
     {
         var line = "{\"type\":\"assistant\",\"message\":{\"content\":[" +
                    "{\"type\":\"tool_use\",\"id\":\"toolu_9\",\"name\":\"Task\"," +
-                   "\"input\":{\"subagent_type\":\"memory-curator\",\"description\":\"save it\"}}]}}";
+                   "\"input\":{\"subagent_type\":\"code-reviewer\",\"description\":\"save it\"}}]}}";
 
         var e = CliStreamProtocol.Parse(line);
 
         Assert.Equal("toolu_9", e.Tools![0].Id);
-        Assert.Equal("memory-curator", e.Tools[0].Subagent);
+        Assert.Equal("code-reviewer", e.Tools[0].Subagent);
     }
 
     [Fact]
