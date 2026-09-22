@@ -125,6 +125,23 @@ public sealed class McpProtocol
         };
     }
 
+    /// <summary>
+    /// The notification that says the tool list is worth reading again.
+    ///
+    /// <c>initialize</c> advertises <c>tools.listChanged</c>, and a capability nobody ever
+    /// exercises is a promise, not a feature: the client lists the tools once at connect and keeps
+    /// that copy forever. A description that carries the solution's state - "there are compile
+    /// errors right now" - is only worth composing if the client is told to come back for it.
+    /// </summary>
+    public static string ToolsListChanged()
+    {
+        return new JObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["method"] = "notifications/tools/list_changed",
+        }.ToString(Newtonsoft.Json.Formatting.None);
+    }
+
     private JObject ToolsList()
     {
         var tools = new JArray();

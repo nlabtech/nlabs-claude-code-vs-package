@@ -7,6 +7,7 @@ using Microsoft.VisualStudio.LanguageServices;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Threading;
 using Newtonsoft.Json.Linq;
+using Nlabs.ClaudeCodeVsPackage.Bridge;
 using Nlabs.ClaudeCodeVsPackage.Bridge.Ide;
 using Nlabs.ClaudeCodeVsPackage.Bridge.Mcp;
 using System;
@@ -52,15 +53,27 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
     private readonly JoinableTaskFactory _jtf;
     private readonly DiffSession _diff;
 
+    /// <summary>
+    /// What the bridge knows about the solution that the agent does not, and that belongs in a tool's
+    /// description rather than in an answer it has to ask for. Updated whenever we genuinely look at
+    /// the error list - a build, or a diagnostics call - so it never claims to be fresher than that.
+    /// </summary>
+    private readonly BridgeContext _context = new BridgeContext();
+
+    /// <summary>Raised when the descriptions have changed and the client should list the tools again.</summary>
+    public event EventHandler? ToolsChanged;
+
     public VsToolCatalog(IAsyncServiceProvider services, JoinableTaskFactory jtf, DiffSession diff)
     {
         _services = services;
         _jtf = jtf;
         _diff = diff;
-        Tools = BuildTools();
     }
 
-    public IReadOnlyList<McpToolDefinition> Tools { get; }
+    // Composed per listing rather than frozen at construction: the whole point of the pushed hint is
+    // that it reflects the solution as it is now, and a list built once can only describe the moment
+    // the bridge started.
+    public IReadOnlyList<McpToolDefinition> Tools => BuildTools(_context);
 
     public async Task<JObject> CallAsync(string name, JObject args, CancellationToken cancellationToken)
     {
@@ -165,6 +178,8 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
 
     private JObject GetDiagnostics(DTE2 dte, JObject args)
     {
+        ObserveErrors(dte);
+
         string? filter = (string?)args["uri"];
         string? filterPath = ToLocalPath(filter);
 
@@ -365,6 +380,7 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
     {
         SolutionBuild build = dte.Solution.SolutionBuild;
         build.Build(WaitForBuildToFinish: true);
+        ObserveErrors(dte);
         return new JObject
         {
             ["failedProjects"] = build.LastBuildInfo, // 0 == success
@@ -973,6 +989,34 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
         return "...(truncated)...\n" + value.Substring(value.Length - maxChars);
     }
 
+    /// <summary>
+    /// Counts the errors standing in the solution right now and, when that number has moved, tells
+    /// the client its copy of the tool list is stale. Called from the two places that have just read
+    /// the error list anyway, so nothing is polled and nothing is guessed.
+    /// </summary>
+    private void ObserveErrors(DTE2 dte)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        int errors = 0;
+        try
+        {
+            var items = dte.ToolWindows.ErrorList.ErrorItems;
+            for (int i = 1; i <= items.Count; i++)
+            {
+                if (items.Item(i).ErrorLevel == vsBuildErrorLevel.vsBuildErrorLevelHigh) errors++;
+            }
+        }
+        catch
+        {
+            return; // the error list is not available; leave the last count alone rather than lying
+        }
+
+        if (errors == _context.CompileErrorCount) return;
+        _context.CompileErrorCount = errors;
+        ToolsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     private static string Severity(vsBuildErrorLevel level)
     {
         switch (level)
@@ -1058,7 +1102,7 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
 
     // ============================ tool catalog (names + schemas) ============================
 
-    private static IReadOnlyList<McpToolDefinition> BuildTools()
+    private static IReadOnlyList<McpToolDefinition> BuildTools(BridgeContext context)
     {
         return new List<McpToolDefinition>
         {
@@ -1072,7 +1116,10 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
                     ["makeFrontmost"] = P("boolean", "Bring the editor to the foreground (default true)."),
                 }, "filePath")),
 
-            Tool("openDiff", "Show a proposed change as a diff and wait for the developer to accept (save) or reject (close) it.",
+            // The one tool that proposes a change, so it is the one that carries the hint: a nudge on a
+            // read would only be noise, and this is the call the developer would want reconsidered
+            // while the solution is still broken.
+            Tool("openDiff", OpenDiffDescription.DescriptionFor(context),
                 Schema(new JObject
                 {
                     ["old_file_path"] = P("string", "Absolute path of the file being changed."),
@@ -1148,6 +1195,10 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
             Tool("gitStatus", "Return `git status` for the solution's repository.", Schema(new JObject())),
         };
     }
+
+    private static readonly ToolDescriptor OpenDiffDescription = new ToolDescriptor(
+        "openDiff",
+        "Show a proposed change as a diff and wait for the developer to accept (save) or reject (close) it.");
 
     private static McpToolDefinition Tool(string name, string description, JObject schema)
         => new McpToolDefinition(name, description, schema);

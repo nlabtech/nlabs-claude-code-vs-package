@@ -113,6 +113,18 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
         var protocol = new McpProtocol(catalog, ServerName, ServerVersion);
         BridgeServer bridge = _bridge;
 
+        // The tool descriptions carry the solution's state, so when that state moves the client's
+        // copy of the list is out of date. It listed once at connect and would keep that copy for
+        // the whole session unless told otherwise.
+        catalog.ToolsChanged += (_, __) =>
+        {
+            _ = JoinableTaskFactory.RunAsync(async () =>
+            {
+                try { await bridge.SendAsync(McpProtocol.ToolsListChanged()); }
+                catch { /* no client attached; the next connect lists them fresh anyway */ }
+            });
+        };
+
         // Each inbound MCP message is handled off the receive loop; a null reply (a
         // notification) is simply not sent back.
         bridge.MessageReceived += (_, json) =>

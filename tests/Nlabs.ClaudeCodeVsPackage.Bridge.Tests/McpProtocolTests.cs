@@ -160,4 +160,16 @@ public class McpProtocolTests
         Assert.NotNull(response["result"]);
         Assert.Empty((JObject)response["result"]!);
     }
+
+    [Fact]
+    public void The_tools_changed_notification_carries_no_id()
+    {
+        // A notification, not a request: an id would have the client waiting for a reply that the
+        // server is never going to send.
+        var notification = JObject.Parse(McpProtocol.ToolsListChanged());
+
+        Assert.Equal("2.0", (string?)notification["jsonrpc"]);
+        Assert.Equal("notifications/tools/list_changed", (string?)notification["method"]);
+        Assert.Null(notification["id"]);
+    }
 }
