@@ -41,6 +41,17 @@ All notable changes to this extension. Versions follow the manifest.
 - **`saveDocument` and `checkDocumentDirty` skipped the workspace check.** That a document has
   to be open already is not a scope rule - a developer opens files from all over the machine -
   and saving writes.
+- **The workspace rule was decided on text, and text is not the whole truth.** A junction is a
+  directory any user can create without admin rights, so a folder inside the open solution could
+  point at `C:\Users\you\.ssh` and read as local either way; a link gives a secret a name the
+  secret list does not know. Every path an IDE tool is handed is now resolved through the file
+  system and judged again on where it really lands. Resolving is best-effort - a file that does
+  not exist yet keeps the verdict it had - so the step can take an answer away but never hand
+  one out.
+- **The approval endpoint checked the token and then took whatever came.** Any verb, any path,
+  and a body read to the end before anything looked at it. It now answers only `POST /permission`,
+  stops at a megabyte the way the bridge does, and denies once too many calls are waiting rather
+  than holding a slot for each for five minutes.
 - **The panel stopped leaving its temp files behind.** A settings file was written per session
   start and never removed, each carrying the permission floor and the path of a script the CLI
   is told to execute, as was the hook script itself.

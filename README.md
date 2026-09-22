@@ -175,6 +175,11 @@ with your own subscription).
   every tool that opens a file first checks the path against the open solution, its projects
   and the panel's working folder - and refuses a file the permission floor names as a secret,
   wherever it sits. A floor is only as strong as the easiest way around it.
+- **And the workspace is where the path really goes**, not where it reads. A junction is a
+  directory any user can create without admin rights; a link can give a secret an ordinary name.
+  Paths are resolved through the file system and judged again on what comes back.
+- The approval endpoint answers one verb on one path, reads at most a megabyte, and denies
+  rather than queue without limit.
 - Runs no model and sends no telemetry. Every change goes through Visual Studio's own edit path,
   behind a diff you approve; tool results carry only what was asked for - no machine, account or
   token detail.
@@ -196,6 +201,15 @@ Built step by step, in public. Each step shipped with a post, and the matching c
 exact code discussed - so the lesson and the working code live in the same place.
 
 Posts: [@turkmvc](https://www.linkedin.com/in/turkmvc/) · nLabtech ([nlabtech.com.tr](https://nlabtech.com.tr))
+
+The threat model, in full - what stops the agent, what is left to you, and how to report a
+vulnerability privately - is in [SECURITY.md](SECURITY.md).
+
+## Contributing
+
+Bug reports from a real session are the most useful thing, and a fix with the test that would
+have caught it is the second. [CONTRIBUTING.md](CONTRIBUTING.md) has the build, the house style
+and what to open an issue about first.
 
 ## Status
 
