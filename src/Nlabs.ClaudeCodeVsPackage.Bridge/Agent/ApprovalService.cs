@@ -29,6 +29,18 @@ public sealed class ApprovalService : IDisposable
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromMinutes(5);
 
+    // The one path the hook script posts to, and the only verb it uses. Anything else is not the
+    // hook, whatever token it carries.
+    private const string HookPath = "/permission";
+
+    // A tool call is a handful of kilobytes. The ceiling is the bridge's own, for the same reason:
+    // a body is read into memory before anything looks at it.
+    private const int MaxBody = 1024 * 1024;
+
+    // A turn that edits a dozen files asks a dozen times; a runaway loop asks forever, and each one
+    // holds a slot for five minutes. Past this the answer is deny - the safe answer, and an honest one.
+    private const int MaxPending = 64;
+
     private readonly HttpListener _listener = new HttpListener();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<(string decision, string reason)>> _pending
         = new ConcurrentDictionary<string, TaskCompletionSource<(string, string)>>();
@@ -91,10 +103,18 @@ public sealed class ApprovalService : IDisposable
             if (!request.IsLocal) { Close(context, 403); return; }
             if (!FixedTimeEquals(request.Headers["x-nlabs-approval"], Token)) { Close(context, 401); return; }
 
-            string body;
-            using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+            // Only after the token, so an unauthenticated caller learns nothing about what is here.
+            if (!string.Equals(request.HttpMethod, "POST", StringComparison.Ordinal)) { Close(context, 405); return; }
+            if (!string.Equals(request.Url?.AbsolutePath, HookPath, StringComparison.Ordinal)) { Close(context, 404); return; }
+            if (request.ContentLength64 > MaxBody) { Close(context, 413); return; }
+
+            string? body = await ReadBounded(request).ConfigureAwait(false);
+            if (body == null) { Close(context, 413); return; }
+
+            if (_pending.Count >= MaxPending)
             {
-                body = await reader.ReadToEndAsync().ConfigureAwait(false);
+                WriteJson(context, HookProtocol.Deny("Too many approvals are already waiting."));
+                return;
             }
 
             HookRequest hook = HookProtocol.ParseRequest(body);
@@ -110,6 +130,25 @@ public sealed class ApprovalService : IDisposable
         catch
         {
             Close(context, 500);
+        }
+    }
+
+    /// <summary>
+    /// The body, or null when it runs past the ceiling. Chunked encoding reports no length up front,
+    /// so the count is kept while reading rather than trusted from the header.
+    /// </summary>
+    private static async Task<string?> ReadBounded(HttpListenerRequest request)
+    {
+        var buffer = new byte[8192];
+        using (var sink = new MemoryStream())
+        {
+            int read;
+            while ((read = await request.InputStream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+            {
+                if (sink.Length + read > MaxBody) return null;
+                sink.Write(buffer, 0, read);
+            }
+            return (request.ContentEncoding ?? System.Text.Encoding.UTF8).GetString(sink.ToArray());
         }
     }
 
