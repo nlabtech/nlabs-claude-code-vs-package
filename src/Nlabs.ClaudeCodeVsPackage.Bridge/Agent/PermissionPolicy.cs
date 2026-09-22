@@ -47,7 +47,16 @@ public static class PermissionPolicy
     };
 
     /// <summary>Tools whose calls are routed through the approval hook (shell included as PowerShell).</summary>
-    public const string HookMatcher = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell";
+    /// <summary>
+    /// The name the extension's tools are served under on the HTTP MCP endpoint, so they arrive as
+    /// mcp__vs__&lt;tool&gt;. Shared with the panel's mcp-config so the two cannot drift apart.
+    /// </summary>
+    public const string McpServerName = "vs";
+
+    // The IDE tools now reach the model over the MCP endpoint too, and a tool the hook does not
+    // match cannot be approved - which, in headless mode, means it cannot run at all. So the matcher
+    // covers them; the panel's gate then decides per mode, treating the read-only ones as reads.
+    public const string HookMatcher = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|mcp__" + McpServerName + "__.*";
 
     /// <summary>
     /// Builds the settings JSON for <c>claude -p --settings</c>: the always-on <c>permissions.deny</c>

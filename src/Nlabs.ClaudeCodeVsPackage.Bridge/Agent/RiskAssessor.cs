@@ -76,7 +76,7 @@ public static class RiskAssessor
     /// <summary>Grades a tool call from its name and the preview of its input.</summary>
     public static RiskAssessment Assess(string? toolName, string? inputPreview)
     {
-        string name = toolName ?? string.Empty;
+        string name = StripMcpPrefix(toolName ?? string.Empty);
         string input = inputPreview ?? string.Empty;
 
         if (Destructive.IsMatch(input))
@@ -113,6 +113,18 @@ public static class RiskAssessor
 
         // Anything unrecognised is not assumed safe.
         return new RiskAssessment(RiskLevel.Medium, "Unrecognised tool.");
+    }
+
+    // A tool served over the HTTP MCP endpoint arrives as mcp__&lt;server&gt;__&lt;tool&gt; - the same
+    // openFile or findSymbols this grades by its bare name. Strip the prefix so the tables below
+    // still match; an unprefixed name is returned unchanged.
+    public static string StripMcpPrefix(string name)
+    {
+        const string p = "mcp__";
+        if (!name.StartsWith(p, StringComparison.Ordinal)) return name;
+        int sep = name.IndexOf("__", p.Length, StringComparison.Ordinal);
+        // Only when a tool name actually follows; a bare mcp__vs__ is left as-is rather than emptied.
+        return sep >= 0 && sep + 2 < name.Length ? name.Substring(sep + 2) : name;
     }
 
     private static bool Contains(string[] names, string name)

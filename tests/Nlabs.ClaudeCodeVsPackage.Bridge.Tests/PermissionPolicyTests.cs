@@ -42,4 +42,16 @@ public class PermissionPolicyTests
         Assert.Contains("Bash(rm:*)", rules);   // floor still present
         Assert.Contains("Bash(docker:*)", rules); // extra rule added
     }
+
+    [Fact]
+    public void The_hook_matcher_covers_the_mcp_served_tools_so_they_can_be_approved()
+    {
+        // A tool the PreToolUse matcher misses cannot be approved, and in headless mode that means
+        // it cannot run. The IDE tools now arrive over MCP, so the matcher has to name them.
+        Assert.Contains("mcp__" + PermissionPolicy.McpServerName + "__.*", PermissionPolicy.HookMatcher);
+
+        var settings = JObject.Parse(PermissionPolicy.BuildSettingsJson(null, "the-hook"));
+        var matcher = (string?)settings["hooks"]!["PreToolUse"]![0]!["matcher"];
+        Assert.Contains("mcp__vs__", matcher);
+    }
 }

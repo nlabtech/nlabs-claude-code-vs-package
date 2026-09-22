@@ -2514,8 +2514,11 @@ internal sealed class AgentPanelControl : UserControl
         if (endpoint == null) return null;
         try
         {
+            // The server name is shared with the hook matcher, so a tool arriving as mcp__vs__* is
+            // the one the matcher routes to the approval card.
             string json =
-                "{\"mcpServers\":{\"vs\":{\"type\":\"http\",\"url\":" + JsonString(endpoint.Url) +
+                "{\"mcpServers\":{" + JsonString(PermissionPolicy.McpServerName) +
+                ":{\"type\":\"http\",\"url\":" + JsonString(endpoint.Url) +
                 ",\"headers\":{\"Authorization\":" + JsonString("Bearer " + endpoint.Token) + "}}}}";
             string path = System.IO.Path.Combine(
                 System.IO.Path.GetTempPath(), "nlabs_claude_mcp_" + Guid.NewGuid().ToString("n") + ".json");

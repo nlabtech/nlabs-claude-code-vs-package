@@ -16,6 +16,11 @@ All notable changes to this extension. Versions follow the manifest.
   name there, and the list-changed notification is pushed over SSE the way the socket path pushes
   it. Same posture as the bridge: loopback only, a per-session bearer token, a one-megabyte
   ceiling, nothing logged.
+- **And the approval path was taught to cover them.** A tool the PreToolUse hook does not match
+  cannot be approved, and in the panel's headless session that means it cannot run at all - so the
+  IDE tools, newly served over MCP, were listed to the model and then blocked. The hook matcher now
+  names them, and the risk grader strips the `mcp__vs__` prefix so a selection read is still a read:
+  waved through in normal mode, a card in full control, exactly like the native path.
 
 ## 0.3.0
 

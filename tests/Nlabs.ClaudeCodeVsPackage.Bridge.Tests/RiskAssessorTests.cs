@@ -85,4 +85,27 @@ public class RiskAssessorTests
     {
         Assert.Equal(RiskLevel.Medium, RiskAssessor.Assess(null, null).Level);
     }
+
+    [Theory]
+    [InlineData("mcp__vs__findSymbols", RiskLevel.Low)]
+    [InlineData("mcp__vs__getCurrentSelection", RiskLevel.Low)]
+    [InlineData("mcp__vs__openDiff", RiskLevel.Medium)]
+    [InlineData("mcp__vs__buildSolution", RiskLevel.High)]
+    [InlineData("mcp__vs__openSolution", RiskLevel.High)]
+    public void A_tool_served_over_mcp_is_graded_by_its_bare_name(string name, RiskLevel expected)
+    {
+        // Over the HTTP endpoint the same tools arrive as mcp__vs__*; the prefix must not turn a
+        // read into an unknown, or every selection read would show a card the native path never did.
+        Assert.Equal(expected, RiskAssessor.Assess(name, "{}").Level);
+    }
+
+    [Theory]
+    [InlineData("mcp__vs__findSymbols", "findSymbols")]
+    [InlineData("mcp__other__doThing", "doThing")]
+    [InlineData("findSymbols", "findSymbols")]
+    [InlineData("mcp__vs__", "mcp__vs__")]
+    public void StripMcpPrefix_removes_the_server_namespace(string given, string expected)
+    {
+        Assert.Equal(expected, RiskAssessor.StripMcpPrefix(given));
+    }
 }
