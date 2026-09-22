@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Windows;
@@ -384,6 +384,13 @@ internal sealed class AgentPanelControl : UserControl
     private double _sessionCost; // running total across the panel's turns
     private ApprovalService? _approval;
     private string? _hookScriptPath;
+
+    /// <summary>
+    /// The settings file the running session was started with. Kept so it can be removed: a new one
+    /// is written per session start, and without this every start would leave another copy of the
+    /// permission floor - and the hook's path - lying in the temp folder for good.
+    /// </summary>
+    private string? _settingsPath;
     private readonly System.Collections.Generic.HashSet<string> _alwaysAllow = new System.Collections.Generic.HashSet<string>();
     private readonly ConversationStore _store = new ConversationStore();
     private readonly PanelPreferencesStore _prefs = new PanelPreferencesStore();
@@ -2480,6 +2487,8 @@ internal sealed class AgentPanelControl : UserControl
             string path = System.IO.Path.Combine(
                 System.IO.Path.GetTempPath(), "nlabs_claude_settings_" + Guid.NewGuid().ToString("n") + ".json");
             System.IO.File.WriteAllText(path, PermissionPolicy.BuildSettingsJson(null, hookCommand));
+            DeleteQuietly(_settingsPath); // the previous session's copy is of no use to anyone
+            _settingsPath = path;
             return path;
         }
         catch
@@ -5233,5 +5242,20 @@ internal sealed class AgentPanelControl : UserControl
         _session = null;
         _approval?.Dispose();
         _approval = null;
+
+        // The temp files exist only for as long as a session can be started with them. Left behind
+        // they accumulate one per start, and the hook script is a file the CLI is told to execute -
+        // not something to leave sitting in a shared temp folder after the panel is gone.
+        DeleteQuietly(_settingsPath);
+        _settingsPath = null;
+        DeleteQuietly(_hookScriptPath);
+        _hookScriptPath = null;
+    }
+
+    private static void DeleteQuietly(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return;
+        try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+        catch { /* still locked, or already gone; not worth telling anyone about */ }
     }
 }

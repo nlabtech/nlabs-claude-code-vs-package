@@ -26,10 +26,24 @@ public static class PermissionPolicy
         "Bash(git push -f:*)",
         "Bash(git reset --hard:*)",
         "Bash(:(){ :|:& };:)",
+        // Local secrets. The list is short on purpose - every name here is one whose whole reason to
+        // exist is to hold a credential, so refusing it costs nothing and never surprises anyone.
+        // PathScope reads these same rules to decide what an IDE tool may open, so a name added here
+        // closes both doors at once and the two can never drift apart.
         "Read(./.env)",
         "Read(./.env.*)",
         "Read(**/*.pem)",
+        "Read(**/*.pfx)",
+        "Read(**/*.p12)",
+        "Read(**/*.key)",
         "Read(**/id_rsa)",
+        "Read(**/id_dsa)",
+        "Read(**/id_ecdsa)",
+        "Read(**/id_ed25519)",
+        "Read(**/.npmrc)",
+        "Read(**/.pypirc)",
+        "Read(**/credentials)",   // the AWS one, and anything that copied its name
+        "Read(**/secrets.json)",  // .NET user secrets
     };
 
     /// <summary>Tools whose calls are routed through the approval hook (shell included as PowerShell).</summary>

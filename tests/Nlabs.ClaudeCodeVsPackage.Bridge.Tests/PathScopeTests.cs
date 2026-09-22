@@ -56,6 +56,12 @@ public class PathScopeTests
     [InlineData(@"C:\work\app\config\.env")]
     [InlineData(@"C:\work\app\certs\server.pem")]
     [InlineData(@"C:\work\app\keys\id_rsa")]
+    [InlineData(@"C:\work\app\keys\id_ed25519")]
+    [InlineData(@"C:\work\app\certs\site.pfx")]
+    [InlineData(@"C:\work\app\certs\site.key")]
+    [InlineData(@"C:\work\app\.npmrc")]
+    [InlineData(@"C:\work\app\secrets.json")]
+    [InlineData(@"C:\work\app\.aws\credentials")]
     public void A_secret_is_refused_even_inside_a_root(string path)
     {
         Assert.Equal(PathVerdict.Secret, PathScope.Check(path, Roots));
@@ -65,6 +71,9 @@ public class PathScopeTests
     [InlineData(@"C:\work\app\env.cs")]
     [InlineData(@"C:\work\app\Environment.cs")]
     [InlineData(@"C:\work\app\keys\id_rsa.pub")]
+    [InlineData(@"C:\work\app\keys\id_ed25519.pub")]
+    [InlineData(@"C:\work\app\Credentials.cs")]
+    [InlineData(@"C:\work\app\appsettings.json")]
     public void A_name_that_only_resembles_a_secret_is_allowed(string path)
     {
         Assert.Equal(PathVerdict.Allowed, PathScope.Check(path, Roots));

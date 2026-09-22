@@ -313,6 +313,7 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
     private JObject CheckDocumentDirty(DTE2 dte, JObject args)
     {
         string path = Require(args, "filePath");
+        EnsureMayOpen(dte, path);
         Document? doc = FindDocument(dte, path);
         if (doc == null)
         {
@@ -331,6 +332,12 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
     private JObject SaveDocument(DTE2 dte, JObject args)
     {
         string path = Require(args, "filePath");
+
+        // Saving writes. That it can only reach a document somebody already opened is not a scope
+        // rule - the developer opens files from everywhere - so the same check every other tool
+        // makes applies here too, and a secret is not a file to be written on Claude's say-so.
+        EnsureMayOpen(dte, path);
+
         Document? doc = FindDocument(dte, path);
         if (doc == null) return new JObject { ["success"] = false, ["filePath"] = path };
 
