@@ -24,6 +24,19 @@ public sealed class ClaudeCliOptions
     /// <summary>Emit partial-message deltas so text streams as it is produced.</summary>
     public bool IncludePartialMessages { get; set; } = true;
 
+    /// <summary>
+    /// Connect this session to the IDE it is running inside, with <c>--ide</c>.
+    ///
+    /// Without it the panel's session is a headless CLI that happens to live in a tool window: it
+    /// cannot see the editor, and none of the Visual Studio tools are on its table - those belong
+    /// to whoever ran <c>/ide</c>. With it the panel becomes the IDE client, so the same tools and
+    /// the same selection pushes a terminal session gets are the panel's too.
+    ///
+    /// The bridge takes one client at a time. If a terminal already holds it, the CLI simply does
+    /// not connect and the panel carries on without the editor's half.
+    /// </summary>
+    public bool ConnectToIde { get; set; } = true;
+
     /// <summary>Path to a settings JSON file (the permission floor), passed with --settings.</summary>
     public string? SettingsPath { get; set; }
 
@@ -222,6 +235,7 @@ public sealed class ClaudeCliSession : IDisposable
         if (options == null) return sb.ToString();
 
         if (options.IncludePartialMessages) sb.Append(" --include-partial-messages");
+        if (options.ConnectToIde) sb.Append(" --ide");
         if (!string.IsNullOrEmpty(options.Model)) sb.Append(" --model ").Append(options.Model);
         if (!string.IsNullOrEmpty(options.PermissionMode)) sb.Append(" --permission-mode ").Append(options.PermissionMode);
         if (!string.IsNullOrEmpty(options.Effort)) sb.Append(" --effort ").Append(options.Effort);

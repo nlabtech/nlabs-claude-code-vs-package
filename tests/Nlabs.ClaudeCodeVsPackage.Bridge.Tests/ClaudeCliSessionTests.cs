@@ -43,6 +43,22 @@ public class ClaudeCliSessionTests
     }
 
     [Fact]
+    public void BuildArguments_connects_to_the_ide_by_default()
+    {
+        // The panel runs inside Visual Studio, so its session should be the IDE's client - without
+        // --ide it is a headless CLI in a tool window, blind to the editor it is sitting in.
+        Assert.Contains("--ide", ClaudeCliSession.BuildArguments(new ClaudeCliOptions()));
+    }
+
+    [Fact]
+    public void BuildArguments_leaves_the_ide_alone_when_turned_off()
+    {
+        string args = ClaudeCliSession.BuildArguments(new ClaudeCliOptions { ConnectToIde = false });
+
+        Assert.DoesNotContain("--ide", args);
+    }
+
+    [Fact]
     public void BuildArguments_quotes_the_appended_system_prompt()
     {
         string args = ClaudeCliSession.BuildArguments(new ClaudeCliOptions
