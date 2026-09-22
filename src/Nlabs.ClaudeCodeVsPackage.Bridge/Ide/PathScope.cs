@@ -50,10 +50,34 @@ public static class PathScope
     /// False only where a file is shown to the developer rather than returned to the model - a diff of
     /// a .env, say - so the workspace rule still applies but the secret rule does not.
     /// </param>
-    public static PathVerdict Check(string? path, IEnumerable<string?>? roots, bool refuseSecrets = true)
+    /// <param name="resolve">
+    /// Follows junctions and links, normally <see cref="RealPath.Resolve"/>. Both the path given and
+    /// the path it lands on have to pass, because a junction anyone may create turns an outside
+    /// folder into a workspace-looking one and a link lets a secret wear an innocent name. Left out
+    /// - in tests, and where no file system is meant to be touched - only the text rules apply.
+    /// </param>
+    public static PathVerdict Check(
+        string? path, IEnumerable<string?>? roots, bool refuseSecrets = true, Func<string, string?>? resolve = null)
     {
         string? full = Normalize(path);
         if (full == null) return PathVerdict.Invalid;
+
+        PathVerdict verdict = Judge(full, roots, refuseSecrets);
+        if (verdict != PathVerdict.Allowed || resolve == null) return verdict;
+
+        string? real = resolve(full);
+        if (real == null || real.Equals(full, StringComparison.OrdinalIgnoreCase)) return verdict;
+
+        // The real path is judged on its own, and a resolver that hands back nonsense is refused
+        // rather than waved through: this step exists to take an answer away, never to give one.
+        string? realFull = Normalize(real);
+        if (realFull == null) return PathVerdict.Invalid;
+
+        return Judge(realFull, roots, refuseSecrets);
+    }
+
+    private static PathVerdict Judge(string full, IEnumerable<string?>? roots, bool refuseSecrets)
+    {
         if (refuseSecrets && IsSecret(full)) return PathVerdict.Secret;
 
         if (roots != null)

@@ -222,7 +222,7 @@ internal sealed class SelectionWatcher : IVsTextViewEvents, IDisposable
     {
         ThreadHelper.ThrowIfNotOnUIThread();
         if (!(Package.GetGlobalService(typeof(DTE)) is DTE2 dte)) return false;
-        return PathScope.Check(path, WorkspaceRoots.Collect(dte)) == PathVerdict.Allowed;
+        return PathScope.Check(path, WorkspaceRoots.Collect(dte), resolve: RealPath.Resolve) == PathVerdict.Allowed;
     }
 
     public void Dispose()

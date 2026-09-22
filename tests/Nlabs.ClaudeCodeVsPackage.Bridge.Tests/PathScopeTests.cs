@@ -118,4 +118,65 @@ public class PathScopeTests
 
         Assert.True(checkedRules > 0);
     }
+
+    [Fact]
+    public void A_junction_out_of_the_workspace_is_refused_for_where_it_really_goes()
+    {
+        // C:\work\app\vendor is a junction to C:\Users\me\.ssh. As text it is inside the workspace,
+        // and anyone can create one without admin rights.
+        Assert.Equal(
+            PathVerdict.OutsideScope,
+            PathScope.Check(@"C:\work\app\vendor\config", Roots, resolve: _ => @"C:\Users\me\.ssh\config"));
+    }
+
+    [Fact]
+    public void A_link_wearing_an_innocent_name_is_refused_for_the_name_it_really_has()
+    {
+        // The secret list works on names, so a link is how a secret gets a name that is not on it.
+        Assert.Equal(
+            PathVerdict.Secret,
+            PathScope.Check(@"C:\work\app\notes.txt", Roots, resolve: _ => @"C:\work\app\.env"));
+    }
+
+    [Fact]
+    public void A_link_that_stays_inside_the_workspace_is_still_allowed()
+    {
+        Assert.Equal(
+            PathVerdict.Allowed,
+            PathScope.Check(@"C:\work\app\link\a.cs", Roots, resolve: _ => @"C:\work\app\real\a.cs"));
+    }
+
+    [Fact]
+    public void A_path_that_cannot_be_resolved_keeps_the_verdict_it_had()
+    {
+        // Resolving is best-effort: a file that does not exist yet, a disk that went away. It may
+        // take an answer away, never hand one out, so an unresolvable path is judged on its text.
+        Assert.Equal(PathVerdict.Allowed, PathScope.Check(@"C:\work\app\new.cs", Roots, resolve: _ => null));
+        Assert.Equal(PathVerdict.OutsideScope, PathScope.Check(@"C:\elsewhere\x.cs", Roots, resolve: _ => null));
+    }
+
+    [Fact]
+    public void A_resolver_answering_nonsense_does_not_open_a_door()
+    {
+        Assert.Equal(PathVerdict.Invalid, PathScope.Check(@"C:\work\app\a.cs", Roots, resolve: _ => "not a path"));
+    }
+
+    [Fact]
+    public void The_resolver_is_not_asked_about_a_path_that_was_already_refused()
+    {
+        bool asked = false;
+        PathScope.Check(@"C:\elsewhere\x.cs", Roots, resolve: p => { asked = true; return p; });
+
+        Assert.False(asked);
+    }
+
+    [Fact]
+    public void The_extended_length_prefix_is_stripped_off_a_resolved_path()
+    {
+        // GetFinalPathNameByHandle always answers in that form, and PathScope refuses it outright -
+        // so a resolved path that kept the prefix would read as invalid instead of being compared.
+        Assert.Equal(@"C:\work\app\a.cs", RealPath.Strip(@"\\?\C:\work\app\a.cs"));
+        Assert.Equal(@"\\server\share\a.cs", RealPath.Strip(@"\\?\UNC\server\share\a.cs"));
+        Assert.Equal(@"C:\plain\a.cs", RealPath.Strip(@"C:\plain\a.cs"));
+    }
 }

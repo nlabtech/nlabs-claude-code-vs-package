@@ -894,7 +894,7 @@ internal sealed class VsToolCatalog : IMcpToolCatalog
     /// </summary>
     private static void EnsureMayOpen(DTE2 dte, string path, bool refuseSecrets = true)
     {
-        switch (PathScope.Check(path, WorkspaceRoots.Collect(dte), refuseSecrets))
+        switch (PathScope.Check(path, WorkspaceRoots.Collect(dte), refuseSecrets, RealPath.Resolve))
         {
             case PathVerdict.Allowed:
                 return;
