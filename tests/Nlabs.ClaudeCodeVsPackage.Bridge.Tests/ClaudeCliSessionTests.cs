@@ -1,4 +1,4 @@
-using Nlabs.ClaudeCodeVsPackage.Bridge.Agent;
+﻿using Nlabs.ClaudeCodeVsPackage.Bridge.Agent;
 using System.Collections.Generic;
 using System.IO;
 using Xunit;
@@ -56,6 +56,29 @@ public class ClaudeCliSessionTests
         string args = ClaudeCliSession.BuildArguments(new ClaudeCliOptions { ConnectToIde = false });
 
         Assert.DoesNotContain("--ide", args);
+    }
+
+    [Fact]
+    public void The_definition_of_done_survives_being_put_on_a_command_line()
+    {
+        // It is one long sentence full of commas and quotes-worth of punctuation, handed to the
+        // Windows argument parser. If the quoting were wrong the session would not start at all.
+        string args = ClaudeCliSession.BuildArguments(new ClaudeCliOptions
+        {
+            AppendSystemPrompt = DefinitionOfDone.Text,
+        });
+
+        Assert.Contains("--append-system-prompt \"", args);
+        Assert.Contains("Compiling is not the same as working", args);
+        Assert.DoesNotContain("\n", DefinitionOfDone.Text);
+    }
+
+    [Fact]
+    public void The_definition_of_done_asks_for_what_was_not_verified()
+    {
+        // The closing instruction is the whole point: a model that says nothing about what it
+        // skipped reads exactly like one that skipped nothing.
+        Assert.Contains("did NOT verify", DefinitionOfDone.Text);
     }
 
     [Fact]

@@ -2237,6 +2237,10 @@ internal sealed class AgentPanelControl : UserControl
         Model = (_modelCombo.SelectedItem as ComboBoxItem)?.Tag as string,
         PermissionMode = (_modeCombo.SelectedItem as ComboBoxItem)?.Tag as string,
         Effort = (_effortCombo.SelectedItem as ComboBoxItem)?.Tag as string,
+
+        // Running inside the IDE is what makes this worth saying: the agent can build the solution,
+        // run the tests and read the diagnostics, so "I assumed it works" has no excuse here.
+        AppendSystemPrompt = DefinitionOfDone.Text,
     };
 
     // Starts a fresh chat and switches to it.
