@@ -48,6 +48,14 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
     /// <summary>The local WebSocket bridge (127.0.0.1). Started on load, disposed on shutdown.</summary>
     private BridgeServer? _bridge;
 
+    /// <summary>
+    /// The same tools over a standard MCP connection. The native /ide path surfaces only the IDE
+    /// tools Claude Code already knows, so the Roslyn, build and debugger tools reach the model
+    /// through this instead - the panel wires it with --mcp-config, a terminal with claude mcp add.
+    /// </summary>
+    private McpHttpServer? _mcpHttp;
+
+
     /// <summary>Manages proposed-change diffs and their accept/reject verdicts.</summary>
     private DiffSession? _diff;
 
@@ -116,6 +124,11 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
         // The tool descriptions carry the solution's state, so when that state moves the client's
         // copy of the list is out of date. It listed once at connect and would keep that copy for
         // the whole session unless told otherwise.
+        // The standard-MCP face of the same protocol, so a client that connects with claude mcp add
+        // or the panel's --mcp-config gets every tool, not just the one the native path allows.
+        _mcpHttp = new McpHttpServer(protocol);
+        McpHttpServer mcpHttp = _mcpHttp;
+
         catalog.ToolsChanged += (_, __) =>
         {
             _ = JoinableTaskFactory.RunAsync(async () =>
@@ -123,6 +136,8 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
                 try { await bridge.SendAsync(McpProtocol.ToolsListChanged()); }
                 catch { /* no client attached; the next connect lists them fresh anyway */ }
             });
+            try { mcpHttp.PushToolsListChanged(); }
+            catch { /* no stream open; the next connect lists them fresh anyway */ }
         };
 
         // Each inbound MCP message is handled off the receive loop; a null reply (a
@@ -140,6 +155,8 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
         };
 
         bridge.Start();
+        _mcpHttp.Start();
+        McpEndpointRegistry.Current = new McpEndpoint(_mcpHttp.Url, _mcpHttp.Token);
 
         // Advertise the endpoint so `claude` can discover Visual Studio. The lock file carries
         // only the port, this process id, the connection token and the open workspace folders -
@@ -192,6 +209,10 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
 
         _bridge?.Dispose();
         _bridge = null;
+
+        McpEndpointRegistry.Current = null;
+        _mcpHttp?.Dispose();
+        _mcpHttp = null;
     }
 
     /// <summary>Restarts the bridge and shows the connection info.</summary>
@@ -202,10 +223,19 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
         StopBridge();
         StartBridge();
 
+        // The panel wires the MCP endpoint itself; this line is for a terminal that wants the full
+        // toolset, since the native /ide path alone gives only diagnostics. The url and token rotate
+        // each restart, so the command is shown fresh here rather than written down once.
+        string mcpAdd = _mcpHttp != null
+            ? "\n\nFor every tool in a terminal (not just diagnostics), also run:\n" +
+              $"  claude mcp add --transport http vs {_mcpHttp.Url} --header \"Authorization: Bearer {_mcpHttp.Token}\""
+            : string.Empty;
+
         string info =
             $"Local bridge listening on 127.0.0.1:{_bridge!.Port}\n\n" +
             "Discovery lock file written to ~/.claude/ide.\n" +
-            "In a terminal, run:  claude  then  /ide";
+            "In a terminal, run:  claude  then  /ide" +
+            mcpAdd;
 
         VsShellUtilities.ShowMessageBox(
             this,

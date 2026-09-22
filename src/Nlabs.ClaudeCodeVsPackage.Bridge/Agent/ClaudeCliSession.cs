@@ -40,6 +40,13 @@ public sealed class ClaudeCliOptions
     /// <summary>Path to a settings JSON file (the permission floor), passed with --settings.</summary>
     public string? SettingsPath { get; set; }
 
+    /// <summary>
+    /// Path to an MCP config file, passed with --mcp-config. The panel writes one pointing at the
+    /// in-process HTTP MCP server, so this session gets every IDE tool, not just the one the native
+    /// /ide path allows. It merges with the user's own MCP servers rather than replacing them.
+    /// </summary>
+    public string? McpConfigPath { get; set; }
+
     /// <summary>Approval endpoint port; passed to the process so the PreToolUse hook can reach it.</summary>
     public int? ApprovalPort { get; set; }
     /// <summary>Approval endpoint token; the hook presents it when asking for a decision.</summary>
@@ -242,6 +249,7 @@ public sealed class ClaudeCliSession : IDisposable
         if (options.Continue) sb.Append(" --continue");
         if (!string.IsNullOrEmpty(options.Resume)) sb.Append(" --resume ").Append(options.Resume);
         if (!string.IsNullOrEmpty(options.SettingsPath)) sb.Append(" --settings ").Append(Quote(options.SettingsPath!));
+        if (!string.IsNullOrEmpty(options.McpConfigPath)) sb.Append(" --mcp-config ").Append(Quote(options.McpConfigPath!));
         if (!string.IsNullOrEmpty(options.AppendSystemPrompt))
         {
             sb.Append(" --append-system-prompt ").Append(Quote(options.AppendSystemPrompt!));

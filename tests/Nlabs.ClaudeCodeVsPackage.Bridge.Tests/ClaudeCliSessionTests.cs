@@ -93,6 +93,22 @@ public class ClaudeCliSessionTests
     }
 
     [Fact]
+    public void BuildArguments_adds_the_mcp_config_path()
+    {
+        // Without it the session sees only the native /ide tools; with it, every tool the HTTP
+        // server offers. The path is quoted because it may live under a temp folder with spaces.
+        string args = ClaudeCliSession.BuildArguments(new ClaudeCliOptions { McpConfigPath = @"C:\tmp\vs mcp.json" });
+
+        Assert.Contains("--mcp-config \"C:\\tmp\\vs mcp.json\"", args);
+    }
+
+    [Fact]
+    public void BuildArguments_leaves_out_the_mcp_config_when_unset()
+    {
+        Assert.DoesNotContain("--mcp-config", ClaudeCliSession.BuildArguments(new ClaudeCliOptions()));
+    }
+
+    [Fact]
     public void BuildArguments_adds_the_settings_path()
     {
         string args = ClaudeCliSession.BuildArguments(new ClaudeCliOptions { SettingsPath = @"C:\tmp\s.json" });

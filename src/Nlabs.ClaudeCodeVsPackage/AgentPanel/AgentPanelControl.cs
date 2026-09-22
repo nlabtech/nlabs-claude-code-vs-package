@@ -12,6 +12,7 @@ using EnvDTE;
 using EnvDTE80;
 using Microsoft.VisualStudio.Shell;
 using Nlabs.ClaudeCodeVsPackage.Bridge.Agent;
+using Nlabs.ClaudeCodeVsPackage.Bridge.Mcp;
 using Nlabs.ClaudeCodeVsPackage.Bridge.Markdown;
 
 namespace Nlabs.ClaudeCodeVsPackage.AgentPanel;
@@ -391,6 +392,7 @@ internal sealed class AgentPanelControl : UserControl
     /// permission floor - and the hook's path - lying in the temp folder for good.
     /// </summary>
     private string? _settingsPath;
+    private string? _mcpConfigPath;
     private readonly System.Collections.Generic.HashSet<string> _alwaysAllow = new System.Collections.Generic.HashSet<string>();
     private readonly ConversationStore _store = new ConversationStore();
     private readonly PanelPreferencesStore _prefs = new PanelPreferencesStore();
@@ -1136,6 +1138,7 @@ internal sealed class AgentPanelControl : UserControl
         ClaudeCliOptions options = CurrentOptions();
         options.Resume = _current.CliSessionId; // continue this chat if it already has a session
         options.SettingsPath = WriteSafetySettings();
+        options.McpConfigPath = WriteMcpConfig();
         if (_approval != null)
         {
             options.ApprovalPort = _approval.Port;
@@ -2499,6 +2502,54 @@ internal sealed class AgentPanelControl : UserControl
         {
             return null;
         }
+    }
+
+    // Points this session at the in-process HTTP MCP server, so it sees every IDE tool - not just
+    // the one the native /ide path surfaces. The server name is "vs", so the tools arrive as
+    // mcp__vs__*. It merges with the user's own MCP servers rather than replacing them. Best-effort:
+    // no endpoint (the bridge is off), no file, and the session runs with the native tools alone.
+    private string? WriteMcpConfig()
+    {
+        McpEndpoint? endpoint = McpEndpointRegistry.Current;
+        if (endpoint == null) return null;
+        try
+        {
+            string json =
+                "{\"mcpServers\":{\"vs\":{\"type\":\"http\",\"url\":" + JsonString(endpoint.Url) +
+                ",\"headers\":{\"Authorization\":" + JsonString("Bearer " + endpoint.Token) + "}}}}";
+            string path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(), "nlabs_claude_mcp_" + Guid.NewGuid().ToString("n") + ".json");
+            System.IO.File.WriteAllText(path, json);
+            DeleteQuietly(_mcpConfigPath); // the previous session's copy carries a stale port and token
+            _mcpConfigPath = path;
+            return path;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // A minimal JSON string encoder for the two values above (a loopback URL and a hex token), so
+    // the config is well-formed without pulling a serializer into this path.
+    private static string JsonString(string value)
+    {
+        var sb = new System.Text.StringBuilder(value.Length + 2);
+        sb.Append('"');
+        foreach (char c in value)
+        {
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                default:
+                    if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        sb.Append('"');
+        return sb.ToString();
     }
 
     // Brings up the approval endpoint and the little hook script that talks to it. Best-effort: if it
@@ -5254,6 +5305,8 @@ internal sealed class AgentPanelControl : UserControl
         _settingsPath = null;
         DeleteQuietly(_hookScriptPath);
         _hookScriptPath = null;
+        DeleteQuietly(_mcpConfigPath);
+        _mcpConfigPath = null;
     }
 
     private static void DeleteQuietly(string? path)
